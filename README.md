@@ -17,3 +17,22 @@ As an example, this is the code to fetch the name of the hardware board on Andro
 The syntax is modelled to be close to Java. The API is not perfect, but simplifies some aspects of interacting with JNI from C++.
 
 There is also support for calling functions on class instances, but this is not heavily tested.
+
+# How do I use this?
+
+Most of this library is header-only, but, for obvious reasons, it needs access to the JNI environment in order to stay safe.
+
+The following function must be defined:
+
+    namespace JNIPP {
+    
+    JNIEnv* GetJNI()
+    {
+        ...
+    }
+    
+    }
+    
+Without this, it would become considerably less fun to use, as you would have to guarantee that the JNI is current to the thread.
+
+Also, on that note, **this library is not made to be thread-safe**.
