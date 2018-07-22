@@ -1,6 +1,8 @@
 #pragma once
 
 #include "jni_types.h"
+#include <stdexcept>
+#include <algorithm>
 #include <vector>
 
 namespace jnipp {
