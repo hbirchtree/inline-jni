@@ -1,8 +1,8 @@
 #pragma once
 
 #include "jni_types.h"
-#include <stdexcept>
 #include <algorithm>
+#include <stdexcept>
 #include <vector>
 
 namespace jnipp {
@@ -12,9 +12,28 @@ struct java_exception : std::runtime_error
     using runtime_error::runtime_error;
 };
 
+struct java_type_cast_exception : std::runtime_error
+{
+    using runtime_error::runtime_error;
+};
+
 extern JNIEnv* GetJNI();
 
 namespace java {
+
+namespace objects {
+
+inline void verify_instance_of(jobject instance, std::string const& className)
+{
+    auto classId = GetJNI()->FindClass(className.c_str());
+
+    if(GetJNI()->IsInstanceOf(instance, classId) == JNI_FALSE)
+    {
+        throw java_type_cast_exception("invalid cast");
+    }
+}
+
+} // namespace objects
 
 template<>
 struct type_unwrapper<std::string>
@@ -25,12 +44,15 @@ struct type_unwrapper<std::string>
 
     operator std::string() const
     {
+        objects::verify_instance_of(value.l, "java/lang/String");
+
         jstring str_obj = reinterpret_cast<jstring>(value.l);
 
         auto        chars = GetJNI()->GetStringUTFChars(str_obj, nullptr);
         std::string out;
         if(chars)
             out = chars;
+
         GetJNI()->ReleaseStringUTFChars(str_obj, chars);
 
         return out;
@@ -38,6 +60,34 @@ struct type_unwrapper<std::string>
 
     jvalue value;
 };
+
+#define TYPE_UNWRAPPER(OUT_TYPE, JV_MEMBER)         \
+    template<>                                      \
+    struct type_unwrapper<OUT_TYPE>                 \
+    {                                               \
+        type_unwrapper(jvalue value) : value(value) \
+        {                                           \
+        }                                           \
+        operator OUT_TYPE() const                   \
+        {                                           \
+            return JV_MEMBER;                       \
+        }                                           \
+        jvalue value;                               \
+    };
+
+TYPE_UNWRAPPER(jobject, value.l)
+
+TYPE_UNWRAPPER(jboolean, value.z)
+TYPE_UNWRAPPER(jbyte, value.b)
+TYPE_UNWRAPPER(jchar, value.c)
+TYPE_UNWRAPPER(jshort, value.s)
+TYPE_UNWRAPPER(jint, value.i)
+TYPE_UNWRAPPER(jlong, value.j)
+
+TYPE_UNWRAPPER(jfloat, value.f)
+TYPE_UNWRAPPER(jdouble, value.d)
+
+#undef TYPE_UNWRAPPER
 
 template<>
 struct type_wrapper<std::string>
@@ -57,20 +107,36 @@ struct type_wrapper<std::string>
     std::string value;
 };
 
-template<>
-struct type_wrapper<jvalue>
-{
-    type_wrapper(jvalue value) : value(value)
-    {
-    }
+#define TYPE_WRAPPER(JTYPE, JV_MEMBER)           \
+    template<>                                   \
+    struct type_wrapper<JTYPE>                   \
+    {                                            \
+        type_wrapper(JTYPE value) : value(value) \
+        {                                        \
+        }                                        \
+        operator jvalue() const                  \
+        {                                        \
+            jvalue v  = {};                      \
+            JV_MEMBER = value;                   \
+            return v;                            \
+        }                                        \
+        JTYPE value;                             \
+    };
 
-    operator jvalue() const
-    {
-        return value;
-    }
+TYPE_WRAPPER(jobject, v.l)
+TYPE_WRAPPER(jstring, v.l)
 
-    jvalue value;
-};
+TYPE_WRAPPER(jboolean, v.z)
+TYPE_WRAPPER(jbyte, v.b)
+TYPE_WRAPPER(jchar, v.c)
+TYPE_WRAPPER(jshort, v.s)
+TYPE_WRAPPER(jint, v.i)
+TYPE_WRAPPER(jlong, v.j)
+
+TYPE_WRAPPER(jfloat, v.f)
+TYPE_WRAPPER(jdouble, v.d)
+
+#undef TYPE_WRAPPER
 
 } // namespace java
 
@@ -95,11 +161,21 @@ struct arg_pair
 
 namespace arguments {
 
-template<typename T>
-inline void get_arg_list(std::vector<jvalue>& values, T arg1)
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jvalue>::value>::type* = nullptr>
+inline void get_arg_value(std::vector<jvalue>& values, T arg1)
 {
-    java::type_wrapper<T> from(arg1);
-    values.push_back(from);
+    values.push_back(arg1);
+}
+
+template<
+    typename T,
+    typename std::enable_if<!std::is_same<T, jvalue>::value>::type* = nullptr>
+inline void get_arg_value(std::vector<jvalue>& values, T arg1)
+{
+    java::type_wrapper<T> wrapper(arg1);
+    values.push_back(wrapper);
 }
 
 inline void get_arg_list(std::vector<jvalue>&)
@@ -109,7 +185,7 @@ inline void get_arg_list(std::vector<jvalue>&)
 template<typename T, typename... Args>
 inline void get_arg_list(std::vector<jvalue>& values, T arg1, Args... args)
 {
-    get_arg_list(values, arg1);
+    get_arg_value(values, arg1);
 
     get_arg_list(values, args...);
 }
@@ -127,38 +203,15 @@ inline std::vector<jvalue> get_args(Args... args)
 
 namespace call {
 
-inline void check_exception()
+struct java_exception_clear
 {
-    if(GetJNI()->ExceptionCheck() == JNI_TRUE)
+    ~java_exception_clear()
     {
-        ::jthrowable exc = GetJNI()->ExceptionOccurred();
-
         GetJNI()->ExceptionClear();
-
-        jclass    clazz = GetJNI()->FindClass("java/lang/Throwable");
-        jmethodID method =
-            GetJNI()->GetMethodID(clazz, "getMessage", "()Ljava/lang/String;");
-
-        jobject message = GetJNI()->CallObjectMethod(exc, method);
-
-        auto messageBytes = GetJNI()->GetStringUTFChars(
-            reinterpret_cast<jstring>(message), nullptr);
-
-        if(!messageBytes)
-        {
-            GetJNI()->ExceptionClear();
-            throw java_exception("");
-        }
-
-        std::string messageCopy = messageBytes;
-
-        GetJNI()->ReleaseStringUTFChars(
-            reinterpret_cast<jstring>(message), messageBytes);
-
-        GetJNI()->ExceptionClear();
-        throw java_exception(messageCopy);
     }
-}
+};
+
+void check_exception();
 
 template<
     typename RType,
@@ -178,26 +231,6 @@ inline ::jvalue instanced(jobject clazz, jmethodID methodId, Args... args)
 template<
     typename RType,
     typename... Args,
-    typename std::enable_if<std::is_same<RType, jobject>::value>::type* =
-        nullptr>
-inline ::jvalue instanced(jobject clazz, jmethodID methodId, Args... args)
-{
-    std::vector<jvalue> values = arguments::get_args(args...);
-
-    jvalue out;
-
-    out.l = GetJNI()->CallObjectMethodA(clazz, methodId, values.data());
-
-    check_exception();
-
-    return out;
-}
-
-/* TODO: Implement primitive calls */
-
-template<
-    typename RType,
-    typename... Args,
     typename std::enable_if<std::is_same<RType, void>::value>::type* = nullptr>
 inline ::jvalue statically(jclass clazz, jmethodID methodId, Args... args)
 {
@@ -210,23 +243,64 @@ inline ::jvalue statically(jclass clazz, jmethodID methodId, Args... args)
     return ::jvalue();
 }
 
-template<
-    typename RType,
-    typename... Args,
-    typename std::enable_if<std::is_same<RType, jobject>::value>::type* =
-        nullptr>
-inline ::jvalue statically(jclass clazz, jmethodID methodId, Args... args)
-{
-    std::vector<jvalue> values = arguments::get_args(args...);
+#define FUNCTION_CALL(                                                         \
+    FUNC_TYPE, JTYPE, OUT_VAR, OUT_TYPE, SIGNATURE, FIRST_ARG_TYPE, FIRST_ARG) \
+    template<                                                                  \
+        typename RType,                                                        \
+        typename... Args,                                                      \
+        typename std::enable_if<std::is_same<RType, JTYPE>::value>::type* =    \
+            nullptr>                                                           \
+    inline OUT_TYPE SIGNATURE(                                                 \
+        FIRST_ARG_TYPE FIRST_ARG, jmethodID methodId, Args... args)            \
+    {                                                                          \
+        std::vector<jvalue> values = arguments::get_args(args...);             \
+        jvalue              out;                                               \
+        OUT_VAR = GetJNI()->Call##FUNC_TYPE##MethodA(                          \
+            FIRST_ARG, methodId, values.data());                               \
+        check_exception();                                                     \
+        return out;                                                            \
+    }
 
-    jvalue out;
+#define INSTANCE_CALL(FUNC_TYPE, JTYPE, OUT_VAR, OUT_TYPE) \
+    FUNCTION_CALL(                                         \
+        FUNC_TYPE, JTYPE, OUT_VAR, OUT_TYPE, instanced, jobject, instance)
+#define INSTANCE_VALUE_CALL(FUNC_TYPE, JTYPE, OUT_VAR) \
+    INSTANCE_CALL(FUNC_TYPE, JTYPE, OUT_VAR, ::jvalue)
 
-    out.l = GetJNI()->CallStaticObjectMethodA(clazz, methodId, values.data());
+#define STATIC_CALL(FUNC_TYPE, JTYPE, OUT_VAR, OUT_TYPE) \
+    FUNCTION_CALL(                                       \
+        Static##FUNC_TYPE,                               \
+        JTYPE,                                           \
+        OUT_VAR,                                         \
+        OUT_TYPE,                                        \
+        statically,                                      \
+        jclass,                                          \
+        clazz)
+#define STATIC_VALUE_CALL(FUNC_TYPE, JTYPE, OUT_VAR) \
+    STATIC_CALL(FUNC_TYPE, JTYPE, OUT_VAR, ::jvalue)
 
-    check_exception();
+#define STATIC_INSTANCE_PAIR(FUNC_TYPE, JTYPE, OUT_VAR) \
+    STATIC_VALUE_CALL(FUNC_TYPE, JTYPE, OUT_VAR)        \
+    INSTANCE_VALUE_CALL(FUNC_TYPE, JTYPE, OUT_VAR)
 
-    return out;
-}
+STATIC_INSTANCE_PAIR(Object, jobject, out.l)
+
+STATIC_INSTANCE_PAIR(Boolean, jboolean, out.z)
+STATIC_INSTANCE_PAIR(Byte, jbyte, out.b)
+STATIC_INSTANCE_PAIR(Char, jchar, out.c)
+STATIC_INSTANCE_PAIR(Short, jshort, out.s)
+STATIC_INSTANCE_PAIR(Int, jint, out.i)
+STATIC_INSTANCE_PAIR(Long, jlong, out.j)
+
+STATIC_INSTANCE_PAIR(Float, jfloat, out.f)
+STATIC_INSTANCE_PAIR(Double, jdouble, out.d)
+
+#undef FUNCTION_CALL
+#undef STATIC_CALL
+#undef STATIC_VALUE_CALL
+#undef INSTANCE_CALL
+#undef INSTANCE_VALUE_CALL
+#undef STATIC_INSTANCE_PAIR
 
 /* TODO: Implement primitive calls */
 
@@ -291,6 +365,8 @@ struct static_field<jobject>
             GetJNI()->GetStaticObjectField(field.clazz, field.fieldId);
         out.l = jobject;
 
+        invocation::call::check_exception();
+
         return out;
     }
 
@@ -309,50 +385,160 @@ inline std::string to_str()
     return "_";
 }
 
-template<>
-inline std::string to_str<bool>()
+/* Primitive types */
+
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jboolean>::value>::type* = nullptr>
+inline std::string to_str()
 {
     return "Z";
 }
 
-template<>
-inline std::string to_str<char>()
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jbyte>::value>::type* = nullptr>
+inline std::string to_str()
 {
     return "B";
 }
 
-template<>
-inline std::string to_str<short>()
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jchar>::value>::type* = nullptr>
+inline std::string to_str()
+{
+    return "B";
+}
+
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jshort>::value>::type* = nullptr>
+inline std::string to_str()
 {
     return "S";
 }
 
-template<>
-inline std::string to_str<int>()
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jint>::value>::type* = nullptr>
+inline std::string to_str()
 {
     return "I";
 }
 
-template<>
-inline std::string to_str<long>()
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jlong>::value>::type* = nullptr>
+inline std::string to_str()
 {
     return "J";
 }
 
-template<>
-inline std::string to_str<float>()
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jfloat>::value>::type* = nullptr>
+inline std::string to_str()
 {
     return "F";
 }
 
-template<>
-inline std::string to_str<double>()
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jdouble>::value>::type* = nullptr>
+inline std::string to_str()
 {
     return "D";
 }
 
-template<>
-inline std::string to_str<void>()
+/* Array types */
+
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jbooleanArray>::value>::type* =
+        nullptr>
+inline std::string to_str()
+{
+    return "[Z";
+}
+
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jbyteArray>::value>::type* =
+        nullptr>
+inline std::string to_str()
+{
+    return "[B";
+}
+
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jcharArray>::value>::type* =
+        nullptr>
+inline std::string to_str()
+{
+    return "[C";
+}
+
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jshortArray>::value>::type* =
+        nullptr>
+inline std::string to_str()
+{
+    return "[S";
+}
+
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jintArray>::value>::type* = nullptr>
+inline std::string to_str()
+{
+    return "[I";
+}
+
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jlongArray>::value>::type* =
+        nullptr>
+inline std::string to_str()
+{
+    return "[J";
+}
+
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jfloatArray>::value>::type* =
+        nullptr>
+inline std::string to_str()
+{
+    return "[F";
+}
+
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jdoubleArray>::value>::type* =
+        nullptr>
+inline std::string to_str()
+{
+    return "[D";
+}
+
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, jobjectArray>::value>::type* =
+        nullptr>
+inline std::string to_str()
+{
+    return "[Ljava/lang/Object;";
+}
+
+/* Exceptional types */
+
+template<
+    typename T,
+    typename std::enable_if<std::is_same<T, void>::value>::type* = nullptr>
+inline std::string to_str()
 {
     return "V";
 }
@@ -488,6 +674,8 @@ struct jclass
         auto methodId = GetJNI()->GetStaticMethodID(
             clazz, method.name(), method.signature());
 
+        invocation::call::check_exception();
+
         return {java::static_method_reference({clazz, methodId})};
     }
 
@@ -501,6 +689,8 @@ struct jclass
     {
         auto fieldId =
             GetJNI()->GetStaticFieldID(clazz, field.name(), field.signature());
+
+        invocation::call::check_exception();
 
         return {java::static_field_reference({clazz, fieldId})};
     }
@@ -525,6 +715,8 @@ struct jobject
         auto methodId = GetJNI()->GetMethodID(
             object.clazz, method.name(), method.signature());
 
+        invocation::call::check_exception();
+
         return {java::method_reference({object.instance, methodId})};
     }
 
@@ -533,6 +725,8 @@ struct jobject
     {
         auto fieldId =
             GetJNI()->GetFieldID(object.clazz, field.name(), field.signature());
+
+        invocation::call::check_exception();
 
         return {java::field_reference({object.instance, fieldId})};
     }
@@ -556,7 +750,31 @@ inline wrapping::jclass get_class(java::clazz const& clazz)
     return {GetJNI()->FindClass(class_name.c_str())};
 }
 
+namespace java {
+namespace objects {
+
+inline std::string get_class(jobject instance)
+{
+    auto Object = jnipp::get_class({"java.lang.Object"});
+    auto Class  = jnipp::get_class({"java.lang.Class"});
+
+    auto getClass =
+        wrapping::jmethod<void>({"getClass"}).ret("java.lang.Class");
+    auto getName = wrapping::jmethod<void>({"getName"}).ret("java.lang.String");
+
+    auto objectInstance = Object(instance);
+    auto classObject    = objectInstance[getClass]();
+    auto className      = Class(classObject.l)[getName]();
+
+    return java::type_unwrapper<std::string>(className);
+}
+
+} // namespace objects
+} // namespace java
+
 } // namespace jnipp
+
+namespace jnipp_operators {
 
 FORCEDINLINE jnipp::wrapping::jclass operator"" _jclass(
     const char* name, size_t)
@@ -574,4 +792,41 @@ FORCEDINLINE jnipp::wrapping::jfield<void> operator"" _jfield(
     const char* name, size_t)
 {
     return {{name}};
+}
+
+} // namespace jnipp_operators
+
+inline void jnipp::invocation::call::check_exception()
+{
+    if(GetJNI()->ExceptionCheck() == JNI_TRUE)
+    {
+        java_exception_clear _;
+
+        ::jthrowable exc = GetJNI()->ExceptionOccurred();
+
+        GetJNI()->ExceptionClear();
+
+        auto exceptionType = jnipp::java::objects::get_class(exc);
+
+        jclass    clazz = GetJNI()->FindClass("java/lang/Throwable");
+        jmethodID method =
+            GetJNI()->GetMethodID(clazz, "getMessage", "()Ljava/lang/String;");
+
+        jobject message = GetJNI()->CallObjectMethod(exc, method);
+
+        java::objects::verify_instance_of(message, "java/lang/String");
+
+        auto messageBytes = GetJNI()->GetStringUTFChars(
+            reinterpret_cast<jstring>(message), nullptr);
+
+        if(!messageBytes)
+            throw java_exception("exception occurred with no message");
+
+        std::string messageCopy = messageBytes;
+
+        GetJNI()->ReleaseStringUTFChars(
+            reinterpret_cast<jstring>(message), messageBytes);
+
+        throw java_exception(exceptionType + ": " + messageCopy);
+    }
 }
