@@ -7,6 +7,13 @@
 
 namespace jnipp {
 
+template<typename T>
+struct is_jarray
+{
+    static constexpr bool value =
+        std::is_base_of<_jarray, typename std::remove_pointer<T>::type>::value;
+};
+
 struct java_exception : std::runtime_error
 {
     using runtime_error::runtime_error;
@@ -34,6 +41,141 @@ inline void verify_instance_of(jobject instance, std::string const& className)
 }
 
 } // namespace objects
+
+namespace array_extractors {
+
+template<typename T>
+struct extract_type
+{
+};
+
+template<>
+struct extract_type<jobjectArray>
+{
+    using type = jobject;
+
+    extract_type(jobject arrayObject) :
+        ref(reinterpret_cast<::jarray>(arrayObject))
+    {
+    }
+
+    jlong length() const
+    {
+        return GetJNI()->GetArrayLength(reinterpret_cast<jarray>(ref));
+    }
+
+    jvalue operator[](jsize index)
+    {
+        jvalue out;
+        out.l = GetJNI()->GetObjectArrayElement(
+            reinterpret_cast<jobjectArray>(ref), index);
+        return out;
+    }
+
+    ::jarray ref;
+};
+
+#define EXTRACT_TYPE_DEF(vtype, vmethod, vmember)                             \
+    template<>                                                                \
+    struct extract_type<vtype##Array>                                         \
+    {                                                                         \
+        using type = vtype;                                                   \
+        extract_type(jobject arrayObject) :                                   \
+            ref(reinterpret_cast<::jarray>(arrayObject))                      \
+        {                                                                     \
+        }                                                                     \
+        jlong length() const                                                  \
+        {                                                                     \
+            return GetJNI()->GetArrayLength(ref);                             \
+        }                                                                     \
+        jvalue operator[](jsize index)                                        \
+        {                                                                     \
+            jvalue out;                                                       \
+            GetJNI()->Get##vmethod##ArrayRegion(                              \
+                reinterpret_cast<vtype##Array>(ref), index, 1, &out.vmember); \
+            return out;                                                       \
+        }                                                                     \
+        ::jarray ref;                                                         \
+    };
+
+EXTRACT_TYPE_DEF(jboolean, Boolean, z)
+EXTRACT_TYPE_DEF(jchar, Char, c)
+EXTRACT_TYPE_DEF(jbyte, Byte, b)
+EXTRACT_TYPE_DEF(jshort, Short, s)
+EXTRACT_TYPE_DEF(jint, Int, i)
+EXTRACT_TYPE_DEF(jlong, Long, j)
+
+EXTRACT_TYPE_DEF(jfloat, Float, f)
+EXTRACT_TYPE_DEF(jdouble, Double, d)
+
+#undef EXTRACT_TYPE_DEF
+
+template<typename T>
+struct container
+{
+    container(jobject arrayObject) :
+        m_extractor(arrayObject), m_end(m_extractor.length())
+    {
+    }
+
+    struct iterator
+    {
+        iterator(container<T>& container, jsize idx) :
+            m_ref(container), m_idx(idx)
+        {
+        }
+
+        iterator(container<T>& container) : m_ref(container), m_idx(m_ref.m_end)
+        {
+        }
+
+        iterator& operator++()
+        {
+            if(m_idx >= m_ref.m_end)
+                throw std::out_of_range("no more elements");
+
+            m_idx++;
+
+            return *this;
+        }
+
+        jvalue operator*()
+        {
+            return m_ref.m_extractor[m_idx];
+        }
+
+        bool operator==(iterator const& other) const
+        {
+            return other.m_idx == m_idx;
+        }
+
+        bool operator!=(iterator const& other) const
+        {
+            return other.m_idx != m_idx;
+        }
+
+      private:
+        container<T> m_ref;
+        jsize        m_idx;
+    };
+
+    iterator begin()
+    {
+        return iterator(*this, 0);
+    }
+
+    iterator end()
+    {
+        return iterator(*this);
+    }
+
+  private:
+    extract_type<T> m_extractor;
+
+    jsize m_end;
+};
+
+} // namespace array_extractors
 
 template<>
 struct type_unwrapper<std::string>
@@ -137,6 +279,23 @@ TYPE_WRAPPER(jfloat, v.f)
 TYPE_WRAPPER(jdouble, v.d)
 
 #undef TYPE_WRAPPER
+
+template<
+    typename T,
+    typename std::enable_if<is_jarray<T>::value>::type* = nullptr>
+struct array_type_unwrapper
+{
+    array_type_unwrapper(jvalue obj) : arrayRef(obj.l)
+    {
+    }
+
+    array_extractors::container<T> operator*()
+    {
+        return array_extractors::container<T>(arrayRef);
+    }
+
+    ::jobject arrayRef;
+};
 
 } // namespace java
 
@@ -345,33 +504,95 @@ namespace class_props {
 template<typename T>
 struct instance_field
 {
-    java::field_reference field;
 };
 
 template<typename T>
 struct static_field
 {
-    java::static_field_reference field;
 };
 
-template<>
-struct static_field<jobject>
-{
-    jvalue operator*()
-    {
-        jvalue out;
+#define CLASS_FIELD_DEF(                                            \
+    vtype, vfield, voperator, vqualifier, vvariablequal, first_arg) \
+    template<>                                                      \
+    struct vqualifier##field<vtype>                                 \
+    {                                                               \
+        jvalue operator*()                                          \
+        {                                                           \
+            jvalue out;                                             \
+                                                                    \
+            out.vfield = GetJNI()->Get##voperator##Field(           \
+                field.first_arg, field.fieldId);                    \
+                                                                    \
+            invocation::call::check_exception();                    \
+                                                                    \
+            return out;                                             \
+        }                                                           \
+                                                                    \
+        java::vvariablequal##field_reference field;                 \
+    };
 
-        auto jobject =
-            GetJNI()->GetStaticObjectField(field.clazz, field.fieldId);
-        out.l = jobject;
+#define INSTANCE_FIELD_DEF(vtype, vfield, voperator) \
+    CLASS_FIELD_DEF(vtype, vfield, voperator, instance_, , instance)
 
-        invocation::call::check_exception();
+#define STATIC_FIELD_DEF(vtype, vfield, voperator) \
+    CLASS_FIELD_DEF(vtype, vfield, Static##voperator, static_, static_, clazz)
 
-        return out;
-    }
+#define COMBINED_FIELD_DEF(vtype, vfield, voperator) \
+    INSTANCE_FIELD_DEF(vtype, vfield, voperator)     \
+    STATIC_FIELD_DEF(vtype, vfield, voperator)
 
-    java::static_field_reference field;
-};
+COMBINED_FIELD_DEF(jobject, l, Object)
+
+COMBINED_FIELD_DEF(jboolean, z, Boolean)
+COMBINED_FIELD_DEF(jbyte, b, Byte)
+COMBINED_FIELD_DEF(jshort, s, Short)
+COMBINED_FIELD_DEF(jint, i, Int)
+COMBINED_FIELD_DEF(jlong, j, Long)
+
+COMBINED_FIELD_DEF(jfloat, f, Float)
+COMBINED_FIELD_DEF(jdouble, d, Double)
+
+#define ARRAY_FIELD_DEF(vtype, vqualifier)                                  \
+    template<>                                                              \
+    struct vqualifier##field<vtype##Array>                                  \
+    {                                                                       \
+        jvalue operator*()                                                  \
+        {                                                                   \
+            jvalue out;                                                     \
+                                                                            \
+            out.l =                                                         \
+                GetJNI()->GetStaticObjectField(field.clazz, field.fieldId); \
+                                                                            \
+            invocation::call::check_exception();                            \
+                                                                            \
+            return out;                                                     \
+        }                                                                   \
+                                                                            \
+        java::static_field_reference field;                                 \
+    };
+
+#define COMBINED_ARRAY_FIELD(vtype) \
+    ARRAY_FIELD_DEF(vtype, static_) \
+    ARRAY_FIELD_DEF(vtype, instance_)
+
+COMBINED_ARRAY_FIELD(jobject)
+
+COMBINED_ARRAY_FIELD(jboolean)
+COMBINED_ARRAY_FIELD(jbyte)
+COMBINED_ARRAY_FIELD(jshort)
+COMBINED_ARRAY_FIELD(jint)
+COMBINED_ARRAY_FIELD(jlong)
+
+COMBINED_ARRAY_FIELD(jfloat)
+COMBINED_ARRAY_FIELD(jdouble)
+
+#undef COMBINED_FIELD_DEF
+#undef STATIC_FIELD_DEF
+#undef INSTANCE_FIELD_DEF
+#undef CLASS_FIELD_DEF
+
+#undef ARRAY_FIELD_DEF
+#undef COMBINED_ARRAY_FIELD
 
 } // namespace class_props
 
@@ -379,7 +600,7 @@ namespace wrapping {
 
 namespace arguments {
 
-template<typename T>
+template<typename T, typename std::enable_if<false, T>::type* = nullptr>
 inline std::string to_str()
 {
     return "_";
@@ -528,9 +749,9 @@ template<
     typename T,
     typename std::enable_if<std::is_same<T, jobjectArray>::value>::type* =
         nullptr>
-inline std::string to_str()
+inline std::string to_str(std::string const& c)
 {
-    return "[Ljava/lang/Object;";
+    return "[L" + c + ";";
 }
 
 /* Exceptional types */
@@ -618,7 +839,7 @@ struct jfield
     jfield<T2> as()
     {
         field.signature = arguments::to_str<T2>();
-        return {field};
+        return {std::move(field)};
     }
 
     jfield<jobject> as(std::string const& type)
@@ -626,6 +847,18 @@ struct jfield
         field.signature = type;
         std::replace(field.signature.begin(), field.signature.end(), '.', '/');
         field.signature = "L" + field.signature + ";";
+        return {std::move(field)};
+    }
+
+    template<
+        typename T2,
+        typename std::enable_if<
+            is_jarray<T2>::value &&
+            std::is_same<T2, jobjectArray>::value>::type* = nullptr>
+    jfield<jobject> as(std::string const& type)
+    {
+        field.signature = arguments::to_str<T2>(type);
+        std::replace(field.signature.begin(), field.signature.end(), '.', '/');
         return {std::move(field)};
     }
 

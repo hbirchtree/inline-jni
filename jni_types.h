@@ -13,8 +13,7 @@ namespace java {
 
 struct method
 {
-    method(std::string const& name) :
-        name(name), signature("()V")
+    method(std::string const& name) : name(name), signature("()V")
     {
     }
 
@@ -128,8 +127,7 @@ struct type_wrapper
 template<typename T>
 struct type_unwrapper
 {
-    type_unwrapper(jvalue value):
-        value(value)
+    type_unwrapper(jvalue value) : value(value)
     {
     }
 
