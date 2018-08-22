@@ -40,6 +40,16 @@ inline void verify_instance_of(jobject instance, std::string const& className)
     }
 }
 
+inline bool not_null(jobject instance)
+{
+    return instance != nullptr;
+}
+
+inline bool not_null(jvalue instance)
+{
+    return not_null(instance.l);
+}
+
 } // namespace objects
 
 namespace array_extractors {
@@ -266,7 +276,6 @@ struct type_wrapper<std::string>
     };
 
 TYPE_WRAPPER(jobject, v.l)
-TYPE_WRAPPER(jstring, v.l)
 
 TYPE_WRAPPER(jboolean, v.z)
 TYPE_WRAPPER(jbyte, v.b)
@@ -440,7 +449,9 @@ inline ::jvalue statically(jclass clazz, jmethodID methodId, Args... args)
 
 #define STATIC_INSTANCE_PAIR(FUNC_TYPE, JTYPE, OUT_VAR) \
     STATIC_VALUE_CALL(FUNC_TYPE, JTYPE, OUT_VAR)        \
-    INSTANCE_VALUE_CALL(FUNC_TYPE, JTYPE, OUT_VAR)
+    INSTANCE_VALUE_CALL(FUNC_TYPE, JTYPE, OUT_VAR)      \
+    STATIC_VALUE_CALL(Object, JTYPE##Array, out.l)      \
+    INSTANCE_VALUE_CALL(Object, JTYPE##Array, out.l)
 
 STATIC_INSTANCE_PAIR(Object, jobject, out.l)
 
@@ -600,6 +611,22 @@ namespace wrapping {
 
 namespace arguments {
 
+inline std::string slashify(std::string const& type)
+{
+    auto out = type;
+    std::replace(out.begin(), out.end(), '.', '/');
+    return out;
+}
+
+inline std::string classify(std::string const& type)
+{
+    std::string out = type;
+
+    out = slashify(type);
+
+    return "L" + out + ";";
+}
+
 template<typename T, typename std::enable_if<false, T>::type* = nullptr>
 inline std::string to_str()
 {
@@ -751,7 +778,7 @@ template<
         nullptr>
 inline std::string to_str(std::string const& c)
 {
-    return "[L" + c + ";";
+    return "[L" + slashify(c) + ";";
 }
 
 /* Exceptional types */
@@ -764,15 +791,6 @@ inline std::string to_str()
     return "V";
 }
 
-inline std::string classify(std::string const& type)
-{
-    std::string out = type;
-
-    std::replace(out.begin(), out.end(), '.', '/');
-
-    return "L" + out + ";";
-}
-
 } // namespace arguments
 
 template<typename RType, typename... Args>
@@ -783,19 +801,48 @@ struct jmethod
     }
 
     template<typename T2>
+    /*!
+     * \brief define a POD or POD array return type
+     * \return
+     */
     jmethod<T2, Args...> ret()
     {
         method.ret(arguments::to_str<T2>());
         return {std::move(method)};
     }
 
+    /*!
+     * \brief define an object return type
+     * \param ret_type Java class name for return type
+     * \return
+     */
     jmethod<::jobject, Args...> ret(std::string const& ret_type)
     {
         method.ret(arguments::classify(ret_type));
         return {std::move(method)};
     }
 
+    template<
+        typename T2,
+        typename std::enable_if<
+            is_jarray<T2>::value &&
+            std::is_same<T2, jobjectArray>::value>::type* = nullptr>
+    /*!
+     * \brief define an object array return type
+     * \param type Java class name of returned type
+     * \return
+     */
+    jmethod<::jobject, Args...> ret(std::string const& type)
+    {
+        method.ret(arguments::to_str<T2>(type));
+        return {std::move(method)};
+    }
+
     template<typename T2>
+    /*!
+     * \brief define argument with POD or POD array type
+     * \return
+     */
     jmethod<RType, Args..., T2> arg()
     {
         method.arg(arguments::to_str<T2>());
@@ -803,15 +850,42 @@ struct jmethod
     }
 
     template<typename T2>
+    /*!
+     * \brief define custom argument type, will call on
+     * jnipp::java::type_wrapper<T2> to translate argument
+     * \param type Java class name for argument, or JNI POD type
+     * \return
+     */
     jmethod<RType, Args..., T2> arg(std::string const& type)
     {
         method.arg(arguments::classify(type));
         return {std::move(method)};
     }
 
+    /*!
+     * \brief define class or POD argument type using jvalue
+     * \param type
+     * \return
+     */
     jmethod<RType, Args..., ::jvalue> arg(std::string const& type)
     {
         method.arg(arguments::classify(type));
+        return {std::move(method)};
+    }
+
+    template<
+        typename T2,
+        typename std::enable_if<
+            is_jarray<T2>::value &&
+            std::is_same<T2, jobjectArray>::value>::type* = nullptr>
+    /*!
+     * \brief define object array argument
+     * \param type class name for elements of array
+     * \return
+     */
+    jmethod<::jobject, Args...> arg(std::string const& type)
+    {
+        method.arg(arguments::to_str<T2>(type));
         return {std::move(method)};
     }
 
@@ -836,17 +910,25 @@ struct jfield
     }
 
     template<typename T2>
+    /*!
+     * \brief define as POD or POD array type
+     * \return
+     */
     jfield<T2> as()
     {
         field.signature = arguments::to_str<T2>();
         return {std::move(field)};
     }
 
+    /*!
+     * \brief define as Java class type
+     * \param type
+     * \return
+     */
     jfield<jobject> as(std::string const& type)
     {
         field.signature = type;
-        std::replace(field.signature.begin(), field.signature.end(), '.', '/');
-        field.signature = "L" + field.signature + ";";
+        field.signature = "L" + arguments::slashify(field.signature) + ";";
         return {std::move(field)};
     }
 
@@ -855,10 +937,14 @@ struct jfield
         typename std::enable_if<
             is_jarray<T2>::value &&
             std::is_same<T2, jobjectArray>::value>::type* = nullptr>
+    /*!
+     * \brief define as object array
+     * \param type class name for elements
+     * \return
+     */
     jfield<jobject> as(std::string const& type)
     {
         field.signature = arguments::to_str<T2>(type);
-        std::replace(field.signature.begin(), field.signature.end(), '.', '/');
         return {std::move(field)};
     }
 
@@ -894,6 +980,8 @@ struct jclass
      * \return
      */
     jobject operator()(::jobject instance);
+
+    jobject operator()(::jvalue instance);
 
     template<typename RType, typename... Args>
     /*!
@@ -969,7 +1057,15 @@ struct jobject
 
 inline jobject jclass::operator()(::jobject instance)
 {
+    if(!instance)
+        throw java_exception("null object");
+
     return jobject(clazz, instance);
+}
+
+inline jobject jclass::operator()(jvalue instance)
+{
+    return (*this)(instance.l);
 }
 
 } // namespace wrapping
@@ -978,7 +1074,7 @@ inline wrapping::jclass get_class(java::clazz const& clazz)
 {
     std::string class_name = clazz.name;
 
-    std::replace(class_name.begin(), class_name.end(), '.', '/');
+    class_name = wrapping::arguments::slashify(class_name);
 
     return {GetJNI()->FindClass(class_name.c_str())};
 }
