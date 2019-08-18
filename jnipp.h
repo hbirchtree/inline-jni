@@ -32,6 +32,9 @@ namespace objects {
 
 inline void verify_instance_of(jobject instance, std::string const& className)
 {
+    if(!instance)
+        throw java_exception("null object");
+
     auto classId = GetJNI()->FindClass(className.c_str());
 
     if(GetJNI()->IsInstanceOf(instance, classId) == JNI_FALSE)
@@ -1065,6 +1068,9 @@ inline jobject jclass::operator()(::jobject instance)
 
 inline jobject jclass::operator()(jvalue instance)
 {
+    if(!instance.l)
+        throw java_exception("null object");
+
     return (*this)(instance.l);
 }
 
