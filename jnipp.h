@@ -1104,6 +1104,16 @@ inline std::string get_class(jobject instance)
     return java::type_unwrapper<std::string>(className);
 }
 
+inline bool not_null(java::object const& instance)
+{
+    return not_null(instance.instance);
+}
+
+inline bool not_null(jnipp::wrapping::jobject const& instance)
+{
+    return not_null(instance.object);
+}
+
 } // namespace objects
 } // namespace java
 
