@@ -511,6 +511,30 @@ struct static_call
     java::static_method_reference method;
 };
 
+template<typename... Args>
+struct constructor_call
+{
+    constructor_call(java::static_method_reference const& method) :
+        method(method)
+    {
+    }
+
+    inline jobject operator()(Args... args)
+    {
+        std::vector<jvalue> values = arguments::get_args(args...);
+
+        auto instance =
+            GetJNI()->NewObject(method.clazz, method.methodId, values.data());
+
+        if(!java::objects::not_null(instance))
+            return {};
+
+        return instance;
+    }
+
+    java::static_method_reference method;
+};
+
 } // namespace invocation
 
 namespace class_props {
@@ -977,8 +1001,18 @@ struct jclass
     {
     }
 
+    template<typename... Args>
     /*!
-     * \brief Object instantiation
+     * \brief Construct an object using a constructor
+     * Constructors are always called "<init>"
+     * \param method
+     * \param args
+     * \return
+     */
+    jobject construct(jmethod<void, Args...> const& method, Args... args);
+
+    /*!
+     * \brief Object instantiation, wraps an existing object
      * \param instance
      * \return
      */
@@ -1055,8 +1089,27 @@ struct jobject
         return {java::field_reference({object.instance, fieldId})};
     }
 
+    operator ::jvalue()
+    {
+        jvalue out;
+        out.l = object.instance;
+        return out;
+    }
+
     java::object object;
 };
+
+template<typename... Args>
+inline jobject jclass::construct(
+    jmethod<void, Args...> const& method, Args... args)
+{
+    auto constructor =
+        GetJNI()->GetMethodID(clazz, method.name(), method.signature());
+
+    invocation::call::check_exception();
+
+    return {clazz, invocation::constructor_call({clazz, constructor})(args...)};
+}
 
 inline jobject jclass::operator()(::jobject instance)
 {
