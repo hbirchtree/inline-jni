@@ -24,7 +24,31 @@ struct java_type_cast_exception : std::runtime_error
     using runtime_error::runtime_error;
 };
 
-extern JNIEnv* GetJNI();
+enum class return_type
+{
+    byte_,
+    char_,
+    short_,
+    int_,
+    long_,
+    bool_,
+    float_,
+    double_,
+
+    byte_array_,
+    char_array_,
+    short_array_,
+    int_array_,
+    long_array_,
+    bool_array_,
+    float_array_,
+    double_array_,
+    object_array_,
+
+    array_,
+    object_,
+    void_,
+};
 
 namespace java {
 
@@ -43,90 +67,96 @@ inline void verify_instance_of(jobject instance, std::string const& className)
     }
 }
 
-inline bool not_null(jobject instance)
+inline bool not_null(optional<java::object> instance)
 {
-    return instance != nullptr;
-}
-
-inline bool not_null(jvalue instance)
-{
-    return not_null(instance.l);
+    return instance.has_value() && instance->instance;
 }
 
 } // namespace objects
 
-namespace array_extractors {
-
-template<typename T>
-struct extract_type
+struct exception_clear_scope
 {
+    ~exception_clear_scope()
+    {
+        GetJNI()->ExceptionClear();
+    }
 };
 
-template<>
-struct extract_type<jobjectArray>
-{
-    using type = jobject;
+namespace array_extractors {
 
-    extract_type(jobject arrayObject) :
-        ref(reinterpret_cast<::jarray>(arrayObject))
+namespace detail {
+
+template<return_type T>
+inline auto get_element(::jarray, ::jsize)
+{
+}
+
+template<>
+inline auto get_element<return_type::object_>(::jarray instance, ::jsize i)
+{
+    return GetJNI()->GetObjectArrayElement(
+        reinterpret_cast<jobjectArray>(instance), i);
+}
+
+#define DEFINE_GET_ELEMENT(JAVA_TYPE, JAVA_NAME, RETURN_TYPE)          \
+    template<>                                                         \
+    inline auto get_element<RETURN_TYPE>(::jarray instance, ::jsize i) \
+    {                                                                  \
+        JAVA_TYPE out;                                                 \
+        GetJNI()->Get##JAVA_NAME##ArrayRegion(                         \
+            reinterpret_cast<JAVA_TYPE##Array>(instance), i, 1, &out); \
+        return out;                                                    \
+    }
+
+DEFINE_GET_ELEMENT(::jboolean, Boolean, return_type::bool_)
+DEFINE_GET_ELEMENT(::jbyte, Byte, return_type::byte_)
+DEFINE_GET_ELEMENT(::jchar, Char, return_type::char_)
+DEFINE_GET_ELEMENT(::jshort, Short, return_type::short_)
+DEFINE_GET_ELEMENT(::jint, Int, return_type::int_)
+DEFINE_GET_ELEMENT(::jlong, Long, return_type::long_)
+DEFINE_GET_ELEMENT(::jfloat, Float, return_type::float_)
+DEFINE_GET_ELEMENT(::jdouble, Double, return_type::double_)
+
+#undef DEFINE_GET_ELEMENT
+
+} // namespace detail
+
+template<return_type T>
+struct extract_type
+{
+    extract_type(java::array array) : ref(array)
     {
     }
 
     jlong length() const
     {
-        return GetJNI()->GetArrayLength(reinterpret_cast<jarray>(ref));
+        return ref.length();
     }
 
-    jvalue operator[](jsize index)
+    auto operator[](jsize index)
     {
-        jvalue out;
-        out.l = GetJNI()->GetObjectArrayElement(
-            reinterpret_cast<jobjectArray>(ref), index);
-        return out;
+        if(index >= length())
+            throw std::out_of_range(
+                std::to_string(index) + " >= " + std::to_string(length()));
+
+        if constexpr(T == return_type::object_)
+            return java::object{
+                {},
+                GetJNI()->GetObjectArrayElement(
+                    reinterpret_cast<jobjectArray>(ref.instance), index)};
+        else if constexpr(T != return_type::object_)
+            return detail::get_element<T>(ref.instance, index);
+        else
+            return java::value();
     }
 
-    ::jarray ref;
+    java::array ref;
 };
 
-#define EXTRACT_TYPE_DEF(vtype, vmethod, vmember)                             \
-    template<>                                                                \
-    struct extract_type<vtype##Array>                                         \
-    {                                                                         \
-        using type = vtype;                                                   \
-        extract_type(jobject arrayObject) :                                   \
-            ref(reinterpret_cast<::jarray>(arrayObject))                      \
-        {                                                                     \
-        }                                                                     \
-        jlong length() const                                                  \
-        {                                                                     \
-            return GetJNI()->GetArrayLength(ref);                             \
-        }                                                                     \
-        jvalue operator[](jsize index)                                        \
-        {                                                                     \
-            jvalue out;                                                       \
-            GetJNI()->Get##vmethod##ArrayRegion(                              \
-                reinterpret_cast<vtype##Array>(ref), index, 1, &out.vmember); \
-            return out;                                                       \
-        }                                                                     \
-        ::jarray ref;                                                         \
-    };
-
-EXTRACT_TYPE_DEF(jboolean, Boolean, z)
-EXTRACT_TYPE_DEF(jchar, Char, c)
-EXTRACT_TYPE_DEF(jbyte, Byte, b)
-EXTRACT_TYPE_DEF(jshort, Short, s)
-EXTRACT_TYPE_DEF(jint, Int, i)
-EXTRACT_TYPE_DEF(jlong, Long, j)
-
-EXTRACT_TYPE_DEF(jfloat, Float, f)
-EXTRACT_TYPE_DEF(jdouble, Double, d)
-
-#undef EXTRACT_TYPE_DEF
-
-template<typename T>
+template<return_type T>
 struct container
 {
-    container(jobject arrayObject) :
+    container(java::array arrayObject) :
         m_extractor(arrayObject), m_end(m_extractor.length())
     {
     }
@@ -152,7 +182,7 @@ struct container
             return *this;
         }
 
-        jvalue operator*()
+        auto operator*()
         {
             return m_ref.m_extractor[m_idx];
         }
@@ -193,15 +223,16 @@ struct container
 template<>
 struct type_unwrapper<std::string>
 {
-    type_unwrapper(jvalue value) : value(value)
+    type_unwrapper(java::object value) : value(value)
     {
     }
 
     operator std::string() const
     {
-        objects::verify_instance_of(value.l, "java/lang/String");
+        objects::verify_instance_of(value, "java/lang/String");
 
-        jstring str_obj = reinterpret_cast<jstring>(value.l);
+        jstring str_obj =
+            reinterpret_cast<jstring>(static_cast<::jobject>(value));
 
         auto        chars = GetJNI()->GetStringUTFChars(str_obj, nullptr);
         std::string out;
@@ -213,36 +244,8 @@ struct type_unwrapper<std::string>
         return out;
     }
 
-    jvalue value;
+    java::object value;
 };
-
-#define TYPE_UNWRAPPER(OUT_TYPE, JV_MEMBER)         \
-    template<>                                      \
-    struct type_unwrapper<OUT_TYPE>                 \
-    {                                               \
-        type_unwrapper(jvalue value) : value(value) \
-        {                                           \
-        }                                           \
-        operator OUT_TYPE() const                   \
-        {                                           \
-            return JV_MEMBER;                       \
-        }                                           \
-        jvalue value;                               \
-    };
-
-TYPE_UNWRAPPER(jobject, value.l)
-
-TYPE_UNWRAPPER(jboolean, value.z)
-TYPE_UNWRAPPER(jbyte, value.b)
-TYPE_UNWRAPPER(jchar, value.c)
-TYPE_UNWRAPPER(jshort, value.s)
-TYPE_UNWRAPPER(jint, value.i)
-TYPE_UNWRAPPER(jlong, value.j)
-
-TYPE_UNWRAPPER(jfloat, value.f)
-TYPE_UNWRAPPER(jdouble, value.d)
-
-#undef TYPE_UNWRAPPER
 
 template<>
 struct type_wrapper<std::string>
@@ -292,12 +295,10 @@ TYPE_WRAPPER(jdouble, v.d)
 
 #undef TYPE_WRAPPER
 
-template<
-    typename T,
-    typename std::enable_if<is_jarray<T>::value>::type* = nullptr>
+template<return_type T>
 struct array_type_unwrapper
 {
-    array_type_unwrapper(jvalue obj) : arrayRef(obj.l)
+    array_type_unwrapper(java::object obj) : arrayRef(*obj.array())
     {
     }
 
@@ -306,20 +307,10 @@ struct array_type_unwrapper
         return array_extractors::container<T>(arrayRef);
     }
 
-    ::jobject arrayRef;
+    java::array arrayRef;
 };
 
 } // namespace java
-
-namespace invocation {
-
-template<typename RType, typename... Args>
-struct instance_call;
-
-template<typename RType, typename... Args>
-struct static_call;
-
-} // namespace invocation
 
 namespace invocation {
 
@@ -374,138 +365,148 @@ inline std::vector<jvalue> get_args(Args... args)
 
 namespace call {
 
-struct java_exception_clear
+enum class calling_method
 {
-    ~java_exception_clear()
-    {
-        GetJNI()->ExceptionClear();
-    }
+    instanced_,
+    static_,
 };
 
 void check_exception();
 
-template<
-    typename RType,
-    typename... Args,
-    typename std::enable_if<std::is_same<RType, void>::value>::type* = nullptr>
-inline ::jvalue instanced(jobject clazz, jmethodID methodId, Args... args)
+template<return_type Type, calling_method Calling, typename... Args>
+inline auto call_no_except(
+    java::clazz clazz, java::object object, java::method method, Args... args)
 {
-    std::vector<jvalue> values = arguments::get_args(args...);
+    auto values = arguments::get_args(std::forward<Args>(args)...);
 
-    GetJNI()->CallVoidMethodA(clazz, methodId, values.data());
-
-    check_exception();
-
-    return ::jvalue();
-}
-
-template<
-    typename RType,
-    typename... Args,
-    typename std::enable_if<std::is_same<RType, void>::value>::type* = nullptr>
-inline ::jvalue statically(jclass clazz, jmethodID methodId, Args... args)
-{
-    std::vector<jvalue> values = arguments::get_args(args...);
-
-    GetJNI()->CallStaticVoidMethodA(clazz, methodId, values.data());
-
-    check_exception();
-
-    return ::jvalue();
-}
-
-#define FUNCTION_CALL(                                                         \
-    FUNC_TYPE, JTYPE, OUT_VAR, OUT_TYPE, SIGNATURE, FIRST_ARG_TYPE, FIRST_ARG) \
-    template<                                                                  \
-        typename RType,                                                        \
-        typename... Args,                                                      \
-        typename std::enable_if<std::is_same<RType, JTYPE>::value>::type* =    \
-            nullptr>                                                           \
-    inline OUT_TYPE SIGNATURE(                                                 \
-        FIRST_ARG_TYPE FIRST_ARG, jmethodID methodId, Args... args)            \
-    {                                                                          \
-        std::vector<jvalue> values = arguments::get_args(args...);             \
-        jvalue              out;                                               \
-        OUT_VAR = GetJNI()->Call##FUNC_TYPE##MethodA(                          \
-            FIRST_ARG, methodId, values.data());                               \
-        check_exception();                                                     \
-        return out;                                                            \
+    if constexpr(Type == return_type::bool_)
+    {
+        return Calling == calling_method::static_
+                   ? GetJNI()->CallStaticBooleanMethodA(
+                         clazz, *method, values.data())
+                   : GetJNI()->CallBooleanMethodA(
+                         object, *method, values.data());
+    } else if constexpr(Type == return_type::byte_)
+    {
+        return Calling == calling_method::static_
+                   ? GetJNI()->CallStaticByteMethodA(
+                         clazz, *method, values.data())
+                   : GetJNI()->CallByteMethodA(object, *method, values.data());
+    } else if constexpr(Type == return_type::char_)
+    {
+        return Calling == calling_method::static_
+                   ? GetJNI()->CallStaticCharMethodA(
+                         clazz, *method, values.data())
+                   : GetJNI()->CallCharMethodA(object, *method, values.data());
+    } else if constexpr(Type == return_type::short_)
+    {
+        return Calling == calling_method::static_
+                   ? GetJNI()->CallStaticShortMethodA(
+                         clazz, *method, values.data())
+                   : GetJNI()->CallShortMethodA(object, *method, values.data());
+    } else if constexpr(Type == return_type::int_)
+    {
+        return Calling == calling_method::static_
+                   ? GetJNI()->CallStaticIntMethodA(
+                         clazz, *method, values.data())
+                   : GetJNI()->CallIntMethodA(object, *method, values.data());
+    } else if constexpr(Type == return_type::long_)
+    {
+        return Calling == calling_method::static_
+                   ? GetJNI()->CallStaticLongMethodA(
+                         clazz, *method, values.data())
+                   : GetJNI()->CallLongMethodA(object, *method, values.data());
+    } else if constexpr(Type == return_type::float_)
+    {
+        return Calling == calling_method::static_
+                   ? GetJNI()->CallStaticFloatMethodA(
+                         clazz, *method, values.data())
+                   : GetJNI()->CallFloatMethodA(object, *method, values.data());
+    } else if constexpr(Type == return_type::double_)
+    {
+        return Calling == calling_method::static_
+                   ? GetJNI()->CallStaticDoubleMethodA(
+                         clazz, *method, values.data())
+                   : GetJNI()->CallDoubleMethodA(
+                         object, *method, values.data());
+    } else if constexpr(Type == return_type::object_)
+    {
+        return java::object{
+            java::clazz(nullptr),
+            Calling == calling_method::static_
+                ? GetJNI()->CallStaticObjectMethodA(
+                      clazz, *method, values.data())
+                : GetJNI()->CallObjectMethodA(object, *method, values.data())};
+    } else if constexpr(Type == return_type::void_)
+    {
+        if constexpr(Calling == calling_method::static_)
+            GetJNI()->CallStaticVoidMethodA(clazz, *method, values.data());
+        else
+            GetJNI()->CallVoidMethodA(object, *method, values.data());
     }
+}
 
-#define INSTANCE_CALL(FUNC_TYPE, JTYPE, OUT_VAR, OUT_TYPE) \
-    FUNCTION_CALL(                                         \
-        FUNC_TYPE, JTYPE, OUT_VAR, OUT_TYPE, instanced, jobject, instance)
-#define INSTANCE_VALUE_CALL(FUNC_TYPE, JTYPE, OUT_VAR) \
-    INSTANCE_CALL(FUNC_TYPE, JTYPE, OUT_VAR, ::jvalue)
-
-#define STATIC_CALL(FUNC_TYPE, JTYPE, OUT_VAR, OUT_TYPE) \
-    FUNCTION_CALL(                                       \
-        Static##FUNC_TYPE,                               \
-        JTYPE,                                           \
-        OUT_VAR,                                         \
-        OUT_TYPE,                                        \
-        statically,                                      \
-        jclass,                                          \
-        clazz)
-#define STATIC_VALUE_CALL(FUNC_TYPE, JTYPE, OUT_VAR) \
-    STATIC_CALL(FUNC_TYPE, JTYPE, OUT_VAR, ::jvalue)
-
-#define STATIC_INSTANCE_PAIR(FUNC_TYPE, JTYPE, OUT_VAR) \
-    STATIC_VALUE_CALL(FUNC_TYPE, JTYPE, OUT_VAR)        \
-    INSTANCE_VALUE_CALL(FUNC_TYPE, JTYPE, OUT_VAR)      \
-    STATIC_VALUE_CALL(Object, JTYPE##Array, out.l)      \
-    INSTANCE_VALUE_CALL(Object, JTYPE##Array, out.l)
-
-STATIC_INSTANCE_PAIR(Object, jobject, out.l)
-
-STATIC_INSTANCE_PAIR(Boolean, jboolean, out.z)
-STATIC_INSTANCE_PAIR(Byte, jbyte, out.b)
-STATIC_INSTANCE_PAIR(Char, jchar, out.c)
-STATIC_INSTANCE_PAIR(Short, jshort, out.s)
-STATIC_INSTANCE_PAIR(Int, jint, out.i)
-STATIC_INSTANCE_PAIR(Long, jlong, out.j)
-
-STATIC_INSTANCE_PAIR(Float, jfloat, out.f)
-STATIC_INSTANCE_PAIR(Double, jdouble, out.d)
-
-#undef FUNCTION_CALL
-#undef STATIC_CALL
-#undef STATIC_VALUE_CALL
-#undef INSTANCE_CALL
-#undef INSTANCE_VALUE_CALL
-#undef STATIC_INSTANCE_PAIR
-
-/* TODO: Implement primitive calls */
+template<return_type Type, calling_method Calling, typename... Args>
+inline auto call(
+    java::clazz clazz, java::object obj, java::method method, Args... args)
+{
+    if constexpr(Type == return_type::void_)
+    {
+        call_no_except<Type, Calling>(
+            clazz, obj, method, std::forward<Args>(args)...);
+        check_exception();
+    } else if constexpr(Type != return_type::void_)
+    {
+        auto out = call_no_except<Type, Calling>(
+            clazz, obj, method, std::forward<Args>(args)...);
+        check_exception();
+        return out;
+    }
+}
 
 } // namespace call
 
-template<typename RType, typename... Args>
+template<return_type RType, typename... Args>
 struct instance_call
 {
     instance_call(java::method_reference const& method) : method(method)
     {
     }
 
-    inline jvalue operator()(Args... args)
+    inline auto operator()(Args... args)
     {
-        return call::instanced<RType, Args...>(
-            method.instance, method.methodId, args...);
+        if constexpr(RType == return_type::void_)
+            call::call<RType, call::calling_method::instanced_>(
+                {},
+                method.instance,
+                method.method,
+                std::forward<Args>(args)...);
+        else
+            return call::call<RType, call::calling_method::instanced_>(
+                {},
+                method.instance,
+                method.method,
+                std::forward<Args>(args)...);
     }
 
     java::method_reference method;
 };
 
-template<typename RType, typename... Args>
+template<return_type RType, typename... Args>
 struct static_call
 {
     static_call(java::static_method_reference const& method) : method(method)
     {
     }
 
-    inline jvalue operator()(Args... args)
+    inline auto operator()(Args... args)
     {
-        return call::statically<RType, Args...>(
-            method.clazz, method.methodId, args...);
+        if constexpr(RType == return_type::void_)
+            call::call<RType, call::calling_method::static_>(
+                method.clazz, {}, method.method, std::forward<Args>(args)...);
+        else
+            return call::call<RType, call::calling_method::static_>(
+                method.clazz, {}, method.method, std::forward<Args>(args)...);
     }
 
     java::static_method_reference method;
@@ -519,17 +520,19 @@ struct constructor_call
     {
     }
 
-    inline jobject operator()(Args... args)
+    inline optional<java::object> operator()(Args... args)
     {
         std::vector<jvalue> values = arguments::get_args(args...);
 
         auto instance =
-            GetJNI()->NewObject(method.clazz, method.methodId, values.data());
+            GetJNI()->NewObject(method.clazz, *method.method, values.data());
 
-        if(!java::objects::not_null(instance))
+        java::object out(method.clazz, instance);
+
+        if(!java::objects::not_null(out))
             return {};
 
-        return instance;
+        return java::object{method.clazz, instance};
     }
 
     java::static_method_reference method;
@@ -539,98 +542,67 @@ struct constructor_call
 
 namespace class_props {
 
-template<typename T>
+template<return_type T>
 struct instance_field
 {
+    auto operator*() const
+    {
+        if constexpr(T == return_type::bool_)
+            return GetJNI()->GetBooleanField(field.instance, *field.field);
+        else if constexpr(T == return_type::byte_)
+            return GetJNI()->GetByteField(field.instance, *field.field);
+        else if constexpr(T == return_type::char_)
+            return GetJNI()->GetCharField(field.instance, *field.field);
+        else if constexpr(T == return_type::short_)
+            return GetJNI()->GetShortField(field.instance, *field.field);
+        else if constexpr(T == return_type::int_)
+            return GetJNI()->GetIntField(field.instance, *field.field);
+        else if constexpr(T == return_type::long_)
+            return GetJNI()->GetLongField(field.instance, *field.field);
+        else if constexpr(T == return_type::float_)
+            return GetJNI()->GetFloatField(field.instance, *field.field);
+        else if constexpr(T == return_type::double_)
+            return GetJNI()->GetDoubleField(field.instance, *field.field);
+        else if constexpr(T == return_type::object_)
+            return java::object{
+                {}, GetJNI()->GetObjectField(field.instance, *field.field)};
+        else
+            return java::value();
+    }
+
+    java::field_reference field;
 };
 
-template<typename T>
+template<return_type T>
 struct static_field
 {
+    auto operator*() const
+    {
+        if constexpr(T == return_type::bool_)
+            return GetJNI()->GetStaticBooleanField(field.clazz, *field.field);
+        else if constexpr(T == return_type::byte_)
+            return GetJNI()->GetStaticByteField(field.clazz, *field.field);
+        else if constexpr(T == return_type::char_)
+            return GetJNI()->GetStaticCharField(field.clazz, *field.field);
+        else if constexpr(T == return_type::short_)
+            return GetJNI()->GetStaticShortField(field.clazz, *field.field);
+        else if constexpr(T == return_type::int_)
+            return GetJNI()->GetStaticIntField(field.clazz, *field.field);
+        else if constexpr(T == return_type::long_)
+            return GetJNI()->GetStaticLongField(field.clazz, *field.field);
+        else if constexpr(T == return_type::float_)
+            return GetJNI()->GetStaticFloatField(field.clazz, *field.field);
+        else if constexpr(T == return_type::double_)
+            return GetJNI()->GetStaticDoubleField(field.clazz, *field.field);
+        else if constexpr(T == return_type::object_)
+            return java::object{
+                {}, GetJNI()->GetStaticObjectField(field.clazz, *field.field)};
+        else
+            return java::value();
+    }
+
+    java::static_field_reference field;
 };
-
-#define CLASS_FIELD_DEF(                                            \
-    vtype, vfield, voperator, vqualifier, vvariablequal, first_arg) \
-    template<>                                                      \
-    struct vqualifier##field<vtype>                                 \
-    {                                                               \
-        jvalue operator*()                                          \
-        {                                                           \
-            jvalue out;                                             \
-                                                                    \
-            out.vfield = GetJNI()->Get##voperator##Field(           \
-                field.first_arg, field.fieldId);                    \
-                                                                    \
-            invocation::call::check_exception();                    \
-                                                                    \
-            return out;                                             \
-        }                                                           \
-                                                                    \
-        java::vvariablequal##field_reference field;                 \
-    };
-
-#define INSTANCE_FIELD_DEF(vtype, vfield, voperator) \
-    CLASS_FIELD_DEF(vtype, vfield, voperator, instance_, , instance)
-
-#define STATIC_FIELD_DEF(vtype, vfield, voperator) \
-    CLASS_FIELD_DEF(vtype, vfield, Static##voperator, static_, static_, clazz)
-
-#define COMBINED_FIELD_DEF(vtype, vfield, voperator) \
-    INSTANCE_FIELD_DEF(vtype, vfield, voperator)     \
-    STATIC_FIELD_DEF(vtype, vfield, voperator)
-
-COMBINED_FIELD_DEF(jobject, l, Object)
-
-COMBINED_FIELD_DEF(jboolean, z, Boolean)
-COMBINED_FIELD_DEF(jbyte, b, Byte)
-COMBINED_FIELD_DEF(jshort, s, Short)
-COMBINED_FIELD_DEF(jint, i, Int)
-COMBINED_FIELD_DEF(jlong, j, Long)
-
-COMBINED_FIELD_DEF(jfloat, f, Float)
-COMBINED_FIELD_DEF(jdouble, d, Double)
-
-#define ARRAY_FIELD_DEF(vtype, vqualifier)                                  \
-    template<>                                                              \
-    struct vqualifier##field<vtype##Array>                                  \
-    {                                                                       \
-        jvalue operator*()                                                  \
-        {                                                                   \
-            jvalue out;                                                     \
-                                                                            \
-            out.l =                                                         \
-                GetJNI()->GetStaticObjectField(field.clazz, field.fieldId); \
-                                                                            \
-            invocation::call::check_exception();                            \
-                                                                            \
-            return out;                                                     \
-        }                                                                   \
-                                                                            \
-        java::static_field_reference field;                                 \
-    };
-
-#define COMBINED_ARRAY_FIELD(vtype) \
-    ARRAY_FIELD_DEF(vtype, static_) \
-    ARRAY_FIELD_DEF(vtype, instance_)
-
-COMBINED_ARRAY_FIELD(jobject)
-
-COMBINED_ARRAY_FIELD(jboolean)
-COMBINED_ARRAY_FIELD(jbyte)
-COMBINED_ARRAY_FIELD(jshort)
-COMBINED_ARRAY_FIELD(jint)
-COMBINED_ARRAY_FIELD(jlong)
-
-COMBINED_ARRAY_FIELD(jfloat)
-COMBINED_ARRAY_FIELD(jdouble)
-
-#undef COMBINED_FIELD_DEF
-#undef STATIC_FIELD_DEF
-#undef INSTANCE_FIELD_DEF
-#undef CLASS_FIELD_DEF
-
-#undef ARRAY_FIELD_DEF
-#undef COMBINED_ARRAY_FIELD
 
 } // namespace class_props
 
@@ -808,6 +780,54 @@ inline std::string to_str(std::string const& c)
     return "[L" + slashify(c) + ";";
 }
 
+template<return_type T>
+inline std::string to_str(std::string const& c = {})
+{
+    if constexpr(T == return_type::bool_)
+        return "Z";
+    else if constexpr(T == return_type::byte_)
+        return "B";
+    else if constexpr(T == return_type::char_)
+        return "C";
+    else if constexpr(T == return_type::short_)
+        return "S";
+    else if constexpr(T == return_type::int_)
+        return "I";
+    else if constexpr(T == return_type::long_)
+        return "J";
+    else if constexpr(T == return_type::float_)
+        return "F";
+    else if constexpr(T == return_type::double_)
+        return "D";
+
+    else if constexpr(T == return_type::bool_array_)
+        return "[Z";
+    else if constexpr(T == return_type::byte_array_)
+        return "[B";
+    else if constexpr(T == return_type::char_array_)
+        return "[C";
+    else if constexpr(T == return_type::short_array_)
+        return "[S";
+    else if constexpr(T == return_type::int_array_)
+        return "[I";
+    else if constexpr(T == return_type::long_array_)
+        return "[J";
+    else if constexpr(T == return_type::float_array_)
+        return "[F";
+    else if constexpr(T == return_type::double_array_)
+        return "[D";
+
+    else if constexpr(T == return_type::object_)
+        return "L" + slashify(c) + ";";
+    else if constexpr(T == return_type::object_array_)
+        return "[L" + slashify(c) + ";";
+
+    else if constexpr(T == return_type::void_)
+        return "V";
+
+    throw std::runtime_error("invalid type");
+}
+
 /* Exceptional types */
 
 template<
@@ -820,14 +840,14 @@ inline std::string to_str()
 
 } // namespace arguments
 
-template<typename RType, typename... Args>
+template<return_type RType, typename... Args>
 struct jmethod
 {
     jmethod(java::method&& method) : method(std::move(method))
     {
     }
 
-    template<typename T2>
+    template<return_type T2>
     /*!
      * \brief define a POD or POD array return type
      * \return
@@ -843,23 +863,22 @@ struct jmethod
      * \param ret_type Java class name for return type
      * \return
      */
-    jmethod<::jobject, Args...> ret(std::string const& ret_type)
+    jmethod<return_type::object_, Args...> ret(std::string const& ret_type)
     {
         method.ret(arguments::classify(ret_type));
         return {std::move(method)};
     }
 
     template<
-        typename T2,
-        typename std::enable_if<
-            is_jarray<T2>::value &&
-            std::is_same<T2, jobjectArray>::value>::type* = nullptr>
+        return_type T2,
+        typename std::enable_if<T2 == return_type::object_array_>::type* =
+            nullptr>
     /*!
      * \brief define an object array return type
      * \param type Java class name of returned type
      * \return
      */
-    jmethod<::jobject, Args...> ret(std::string const& type)
+    jmethod<return_type::object_, Args...> ret(std::string const& type)
     {
         method.ret(arguments::to_str<T2>(type));
         return {std::move(method)};
@@ -910,7 +929,7 @@ struct jmethod
      * \param type class name for elements of array
      * \return
      */
-    jmethod<::jobject, Args...> arg(std::string const& type)
+    jmethod<return_type::object_, Args...> arg(std::string const& type)
     {
         method.arg(arguments::to_str<T2>(type));
         return {std::move(method)};
@@ -929,14 +948,14 @@ struct jmethod
     java::method method;
 };
 
-template<typename T>
+template<return_type T>
 struct jfield
 {
     jfield(java::field&& field) : field(std::move(field))
     {
     }
 
-    template<typename T2>
+    template<return_type T2>
     /*!
      * \brief define as POD or POD array type
      * \return
@@ -952,7 +971,7 @@ struct jfield
      * \param type
      * \return
      */
-    jfield<jobject> as(std::string const& type)
+    jfield<return_type::object_> as(std::string const& type)
     {
         field.signature = type;
         field.signature = "L" + arguments::slashify(field.signature) + ";";
@@ -960,16 +979,15 @@ struct jfield
     }
 
     template<
-        typename T2,
-        typename std::enable_if<
-            is_jarray<T2>::value &&
-            std::is_same<T2, jobjectArray>::value>::type* = nullptr>
+        return_type T2,
+        typename std::enable_if<T2 == return_type::object_array_>::type* =
+            nullptr>
     /*!
      * \brief define as object array
      * \param type class name for elements
      * \return
      */
-    jfield<jobject> as(std::string const& type)
+    jfield<T2> as(std::string const& type)
     {
         field.signature = arguments::to_str<T2>(type);
         return {std::move(field)};
@@ -992,12 +1010,13 @@ struct jobject;
 
 struct jclass
 {
-    jclass(::jclass clazz) : clazz(clazz)
+    jclass(::jclass clazz, std::string const& class_name) :
+        clazz(clazz), class_name(class_name)
     {
     }
 
     jclass(std::string const& clazz) :
-        jclass(GetJNI()->FindClass(clazz.c_str()))
+        jclass(GetJNI()->FindClass(clazz.c_str()), clazz)
     {
     }
 
@@ -1009,18 +1028,21 @@ struct jclass
      * \param args
      * \return
      */
-    jobject construct(jmethod<void, Args...> const& method, Args... args);
+    jobject construct(
+        jmethod<return_type::void_, Args...> const& method, Args... args);
 
     /*!
      * \brief Object instantiation, wraps an existing object
      * \param instance
      * \return
      */
+    jobject operator()(java::object instance);
+
     jobject operator()(::jobject instance);
 
-    jobject operator()(::jvalue instance);
+    jobject operator()(java::value instance);
 
-    template<typename RType, typename... Args>
+    template<return_type RType, typename... Args>
     /*!
      * \brief Static method calls
      * \param method
@@ -1037,7 +1059,7 @@ struct jclass
         return {java::static_method_reference({clazz, methodId})};
     }
 
-    template<typename T>
+    template<return_type T>
     /*!
      * \brief Static fields
      * \param field
@@ -1053,7 +1075,13 @@ struct jclass
         return {java::static_field_reference({clazz, fieldId})};
     }
 
-    ::jclass clazz;
+    inline operator std::string() const
+    {
+        return class_name;
+    }
+
+    java::clazz clazz;
+    std::string class_name;
 };
 
 struct jobject
@@ -1062,38 +1090,38 @@ struct jobject
     {
     }
 
-    jobject(::jclass clazz, ::jobject object) : object({clazz, object})
-    {
-    }
-
-    template<typename RType, typename... Args>
+    template<return_type RType, typename... Args>
     invocation::instance_call<RType, Args...> operator[](
         jmethod<RType, Args...> const& method)
     {
         auto methodId = GetJNI()->GetMethodID(
-            object.clazz, method.name(), method.signature());
+            *object.clazz, method.name(), method.signature());
 
         invocation::call::check_exception();
 
-        return {java::method_reference({object.instance, methodId})};
+        return {java::method_reference{object, methodId}};
     }
 
-    template<typename T>
+    template<return_type T>
     class_props::instance_field<T> operator[](jfield<T> const& field)
     {
-        auto fieldId =
-            GetJNI()->GetFieldID(object.clazz, field.name(), field.signature());
+        auto fieldId = GetJNI()->GetFieldID(
+            *object.clazz, field.name(), field.signature());
 
         invocation::call::check_exception();
 
-        return {java::field_reference({object.instance, fieldId})};
+        return {java::field_reference{object, fieldId}};
     }
 
     operator ::jvalue()
     {
         jvalue out;
-        out.l = object.instance;
+        out.l = object;
         return out;
+    }
+    operator java::object()
+    {
+        return object;
     }
 
     java::object object;
@@ -1101,70 +1129,67 @@ struct jobject
 
 template<typename... Args>
 inline jobject jclass::construct(
-    jmethod<void, Args...> const& method, Args... args)
+    jmethod<return_type::void_, Args...> const& method, Args... args)
 {
     auto constructor =
         GetJNI()->GetMethodID(clazz, method.name(), method.signature());
 
     invocation::call::check_exception();
 
-    return {clazz, invocation::constructor_call({clazz, constructor})(args...)};
+    return jobject{java::object{
+        {clazz}, *invocation::constructor_call({clazz, constructor})(args...)}};
 }
 
-inline jobject jclass::operator()(::jobject instance)
+inline jobject jclass::operator()(java::object instance)
 {
     if(!instance)
         throw java_exception("null object");
 
-    return jobject(clazz, instance);
+    return jobject(java::object{clazz, instance.instance});
 }
 
-inline jobject jclass::operator()(jvalue instance)
+inline jobject jclass::operator()(::jobject instance)
 {
-    if(!instance.l)
+    return (*this)(java::object({}, instance));
+}
+
+inline jobject jclass::operator()(java::value instance)
+{
+    if(!instance)
         throw java_exception("null object");
 
-    return (*this)(instance.l);
+    return (*this)(java::object({}, instance->l));
 }
 
 } // namespace wrapping
 
 inline wrapping::jclass get_class(java::clazz const& clazz)
 {
-    std::string class_name = clazz.name;
+    std::string class_name = *clazz.name;
 
     class_name = wrapping::arguments::slashify(class_name);
 
-    return {GetJNI()->FindClass(class_name.c_str())};
+    return {GetJNI()->FindClass(class_name.c_str()), class_name};
 }
 
 namespace java {
 namespace objects {
 
-inline std::string get_class(jobject instance)
+inline std::string get_class(java::object instance)
 {
     auto Object = jnipp::get_class({"java.lang.Object"});
     auto Class  = jnipp::get_class({"java.lang.Class"});
 
-    auto getClass =
-        wrapping::jmethod<void>({"getClass"}).ret("java.lang.Class");
-    auto getName = wrapping::jmethod<void>({"getName"}).ret("java.lang.String");
+    auto getClass = wrapping::jmethod<return_type::void_>({"getClass"})
+                        .ret("java.lang.Class");
+    auto getName = wrapping::jmethod<return_type::void_>({"getName"})
+                       .ret("java.lang.String");
 
     auto objectInstance = Object(instance);
     auto classObject    = objectInstance[getClass]();
-    auto className      = Class(classObject.l)[getName]();
+    auto className      = Class(classObject)[getName]();
 
     return java::type_unwrapper<std::string>(className);
-}
-
-inline bool not_null(java::object const& instance)
-{
-    return not_null(instance.instance);
-}
-
-inline bool not_null(jnipp::wrapping::jobject const& instance)
-{
-    return not_null(instance.object);
 }
 
 } // namespace objects
@@ -1180,16 +1205,16 @@ FORCEDINLINE jnipp::wrapping::jclass operator"" _jclass(
     return jnipp::get_class({name});
 }
 
-FORCEDINLINE jnipp::wrapping::jmethod<void> operator"" _jmethod(
-    const char* name, size_t)
+FORCEDINLINE jnipp::wrapping::jmethod<jnipp::return_type::void_>
+             operator"" _jmethod(const char* name, size_t)
 {
-    return {{name}};
+    return {jnipp::java::method{name}};
 }
 
-FORCEDINLINE jnipp::wrapping::jfield<void> operator"" _jfield(
-    const char* name, size_t)
+FORCEDINLINE jnipp::wrapping::jfield<jnipp::return_type::void_>
+             operator"" _jfield(const char* name, size_t)
 {
-    return {{name}};
+    return {jnipp::java::field{name}};
 }
 
 } // namespace jnipp_operators
@@ -1198,33 +1223,24 @@ inline void jnipp::invocation::call::check_exception()
 {
     if(GetJNI()->ExceptionCheck() == JNI_TRUE)
     {
-        java_exception_clear _;
+        java::exception_clear_scope _;
 
-        ::jthrowable exc = GetJNI()->ExceptionOccurred();
+        auto exception = java::object({}, GetJNI()->ExceptionOccurred());
 
         GetJNI()->ExceptionClear();
 
-        auto exceptionType = jnipp::java::objects::get_class(exc);
+        auto exceptionType = jnipp::java::objects::get_class(
+            java::object(java::clazz{}, exception));
 
-        jclass    clazz = GetJNI()->FindClass("java/lang/Throwable");
-        jmethodID method =
-            GetJNI()->GetMethodID(clazz, "getMessage", "()Ljava/lang/String;");
+        auto Throwable = get_class(java::clazz{"java.lang.Throwable"});
+        auto getMessage =
+            wrapping::jmethod<return_type::void_>(java::method("getMessage"))
+                .ret("java.lang.String");
 
-        jobject message = GetJNI()->CallObjectMethod(exc, method);
+        auto message = java::type_unwrapper<std::string>(
+            Throwable(exception)[getMessage]());
 
-        java::objects::verify_instance_of(message, "java/lang/String");
-
-        auto messageBytes = GetJNI()->GetStringUTFChars(
-            reinterpret_cast<jstring>(message), nullptr);
-
-        if(!messageBytes)
-            throw java_exception("exception occurred with no message");
-
-        std::string messageCopy = messageBytes;
-
-        GetJNI()->ReleaseStringUTFChars(
-            reinterpret_cast<jstring>(message), messageBytes);
-
-        throw java_exception(exceptionType + ": " + messageCopy);
+        throw java_exception(
+            exceptionType + ": " + static_cast<std::string>(message));
     }
 }

@@ -9,11 +9,19 @@
 
 namespace jnipp {
 
+extern JNIEnv* GetJNI();
+
+template<typename T>
+using optional = std::optional<T>;
+
 namespace java {
 
 struct method
 {
     method(std::string const& name) : name(name), signature("()V")
+    {
+    }
+    method(::jmethodID method_id) : method_id(method_id)
     {
     }
 
@@ -47,13 +55,22 @@ struct method
         signature = begin + argType + end;
     }
 
+    ::jmethodID operator*() const
+    {
+        return *method_id;
+    }
+
     std::string name;
     std::string signature;
+    optional<::jmethodID> method_id;
 };
 
 struct field
 {
     field(std::string const& name) : name(name)
+    {
+    }
+    field(::jfieldID field_id) : field_id(field_id)
     {
     }
 
@@ -63,8 +80,14 @@ struct field
         return *this;
     }
 
+    ::jfieldID operator*() const
+    {
+        return *field_id;
+    }
+
     std::string name;
     std::string signature;
+    optional<::jfieldID> field_id;
 };
 
 struct clazz
@@ -72,43 +95,120 @@ struct clazz
     clazz(std::string const& name) : name(name)
     {
     }
-
-    operator const char*()
+    clazz(::jclass ref) : class_ref(ref)
     {
-        return name.c_str();
+    }
+    clazz()
+    {
     }
 
-    std::string name;
+    operator const char*() const
+    {
+        return name->c_str();
+    }
+
+    operator ::jclass() const
+    {
+        return *class_ref;
+    }
+
+    optional<std::string> name;
+    optional<::jclass>    class_ref;
+};
+
+struct array
+{
+    ::jarray instance;
+
+    jlong length() const
+    {
+        return GetJNI()->GetArrayLength(instance);
+    }
 };
 
 struct object
 {
-    jclass  clazz;
-    jobject instance;
+    object(java::clazz clazz, ::jobject instance) :
+        clazz(*clazz.class_ref), instance(instance)
+    {
+    }
+    object()
+    {
+    }
+
+    optional<::jclass> clazz;
+    ::jobject          instance;
+
+    operator ::jobject() const
+    {
+        return instance;
+    }
+
+    optional<java::array> array() const
+    {
+        if(!instance)
+            return {};
+        return java::array{reinterpret_cast<::jarray>(instance)};
+    }
+
+    inline operator bool() const
+    {
+        return instance;
+    }
 };
+
+using value = optional<::jvalue>;
+
+template<typename T>
+inline value make_value(T val)
+{
+    ::jvalue out;
+    if constexpr(std::is_same_v<T, jboolean>)
+        out.z = val;
+    else if constexpr(std::is_same_v<T, jbyte>)
+        out.b = val;
+    else if constexpr(std::is_same_v<T, jchar>)
+        out.b = val;
+    else if constexpr(std::is_same_v<T, jshort>)
+        out.s = val;
+    else if constexpr(std::is_same_v<T, jint>)
+        out.i = val;
+    else if constexpr(std::is_same_v<T, jlong>)
+        out.j = val;
+    else if constexpr(std::is_same_v<T, jfloat>)
+        out.f = val;
+    else if constexpr(std::is_same_v<T, jdouble>)
+        out.d = val;
+    else if constexpr(std::is_same_v<T, jobject>)
+        out.l = val;
+    else
+        return {};
+
+    return out;
+}
 
 struct method_reference
 {
-    jobject   instance;
-    jmethodID methodId;
+    java::object instance;
+    java::method method;
 };
 
 struct static_method_reference
 {
-    jclass    clazz;
-    jmethodID methodId;
+    java::clazz  clazz;
+    java::method method;
 };
 
 struct field_reference
 {
-    jobject  instance;
-    jfieldID fieldId;
+    java::object instance;
+    java::field  field;
 };
 
 struct static_field_reference
 {
-    jclass   clazz;
-    jfieldID fieldId;
+    java::clazz clazz;
+    java::field field;
 };
 
 template<typename T>
@@ -118,16 +218,16 @@ struct type_wrapper
     {
     }
 
-    operator jvalue()
+    operator java::value()
     {
-        return jvalue();
+        return java::value();
     }
 };
 
 template<typename T>
 struct type_unwrapper
 {
-    type_unwrapper(jvalue value) : value(value)
+    type_unwrapper(java::value value) : value(value)
     {
     }
 
@@ -136,7 +236,7 @@ struct type_unwrapper
         return T();
     }
 
-    jvalue value;
+    java::value value;
 };
 
 } // namespace java
