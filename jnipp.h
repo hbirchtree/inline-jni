@@ -2,6 +2,7 @@
 
 #include "jni_types.h"
 #include <algorithm>
+#include <peripherals/stl/any_of.h>
 #include <stdexcept>
 #include <vector>
 
@@ -124,7 +125,8 @@ DEFINE_GET_ELEMENT(::jdouble, Double, return_type::double_)
 template<return_type T>
 struct extract_type
 {
-    extract_type(java::array array) : ref(array)
+    extract_type(java::array array)
+        : ref(array)
     {
     }
 
@@ -156,19 +158,23 @@ struct extract_type
 template<return_type T>
 struct container
 {
-    container(java::array arrayObject) :
-        m_extractor(arrayObject), m_end(m_extractor.length())
+    container(java::array arrayObject)
+        : m_extractor(arrayObject)
+        , m_end(m_extractor.length())
     {
     }
 
     struct iterator
     {
-        iterator(container<T>& container, jsize idx) :
-            m_ref(container), m_idx(idx)
+        iterator(container<T>& container, jsize idx)
+            : m_ref(container)
+            , m_idx(idx)
         {
         }
 
-        iterator(container<T>& container) : m_ref(container), m_idx(m_ref.m_end)
+        iterator(container<T>& container)
+            : m_ref(container)
+            , m_idx(m_ref.m_end)
         {
         }
 
@@ -223,7 +229,8 @@ struct container
 template<>
 struct type_unwrapper<std::string>
 {
-    type_unwrapper(java::object value) : value(value)
+    type_unwrapper(java::object value)
+        : value(value)
     {
     }
 
@@ -250,7 +257,8 @@ struct type_unwrapper<std::string>
 template<>
 struct type_wrapper<std::string>
 {
-    type_wrapper(std::string const& value) : value(value)
+    type_wrapper(std::string const& value)
+        : value(value)
     {
     }
 
@@ -265,20 +273,21 @@ struct type_wrapper<std::string>
     std::string value;
 };
 
-#define TYPE_WRAPPER(JTYPE, JV_MEMBER)           \
-    template<>                                   \
-    struct type_wrapper<JTYPE>                   \
-    {                                            \
-        type_wrapper(JTYPE value) : value(value) \
-        {                                        \
-        }                                        \
-        operator jvalue() const                  \
-        {                                        \
-            jvalue v  = {};                      \
-            JV_MEMBER = value;                   \
-            return v;                            \
-        }                                        \
-        JTYPE value;                             \
+#define TYPE_WRAPPER(JTYPE, JV_MEMBER) \
+    template<>                         \
+    struct type_wrapper<JTYPE>         \
+    {                                  \
+        type_wrapper(JTYPE value)      \
+            : value(value)             \
+        {                              \
+        }                              \
+        operator jvalue() const        \
+        {                              \
+            jvalue v  = {};            \
+            JV_MEMBER = value;         \
+            return v;                  \
+        }                              \
+        JTYPE value;                   \
     };
 
 TYPE_WRAPPER(jobject, v.l)
@@ -298,7 +307,8 @@ TYPE_WRAPPER(jdouble, v.d)
 template<return_type T>
 struct array_type_unwrapper
 {
-    array_type_unwrapper(java::object obj) : arrayRef(*obj.array())
+    array_type_unwrapper(java::object obj)
+        : arrayRef(*obj.array())
     {
     }
 
@@ -437,6 +447,24 @@ inline auto call_no_except(
                 ? GetJNI()->CallStaticObjectMethodA(
                       clazz, *method, values.data())
                 : GetJNI()->CallObjectMethodA(object, *method, values.data())};
+    } else if constexpr(stl_types::one_of(
+                            Type,
+                            return_type::bool_array_,
+                            return_type::char_array_,
+                            return_type::short_array_,
+                            return_type::int_array_,
+                            return_type::long_array_,
+                            return_type::float_array_,
+                            return_type::double_array_))
+    {
+        return java::object{
+            java::clazz(nullptr),
+            Calling == calling_method::static_
+                ? GetJNI()->CallStaticObjectMethodA(
+                      clazz, *method, values.data())
+                : GetJNI()->CallObjectMethodA(object, *method, values.data())}
+            .array()
+            .value();
     } else if constexpr(Type == return_type::void_)
     {
         if constexpr(Calling == calling_method::static_)
@@ -469,7 +497,8 @@ inline auto call(
 template<return_type RType, typename... Args>
 struct instance_call
 {
-    instance_call(java::method_reference const& method) : method(method)
+    instance_call(java::method_reference const& method)
+        : method(method)
     {
     }
 
@@ -495,7 +524,8 @@ struct instance_call
 template<return_type RType, typename... Args>
 struct static_call
 {
-    static_call(java::static_method_reference const& method) : method(method)
+    static_call(java::static_method_reference const& method)
+        : method(method)
     {
     }
 
@@ -515,8 +545,8 @@ struct static_call
 template<typename... Args>
 struct constructor_call
 {
-    constructor_call(java::static_method_reference const& method) :
-        method(method)
+    constructor_call(java::static_method_reference const& method)
+        : method(method)
     {
     }
 
@@ -843,7 +873,8 @@ inline std::string to_str()
 template<return_type RType, typename... Args>
 struct jmethod
 {
-    jmethod(java::method&& method) : method(std::move(method))
+    jmethod(java::method&& method)
+        : method(std::move(method))
     {
     }
 
@@ -951,7 +982,8 @@ struct jmethod
 template<return_type T>
 struct jfield
 {
-    jfield(java::field&& field) : field(std::move(field))
+    jfield(java::field&& field)
+        : field(std::move(field))
     {
     }
 
@@ -1010,13 +1042,14 @@ struct jobject;
 
 struct jclass
 {
-    jclass(::jclass clazz, std::string const& class_name) :
-        clazz(clazz), class_name(class_name)
+    jclass(::jclass clazz, std::string const& class_name)
+        : clazz(clazz)
+        , class_name(class_name)
     {
     }
 
-    jclass(std::string const& clazz) :
-        jclass(GetJNI()->FindClass(clazz.c_str()), clazz)
+    jclass(std::string const& clazz)
+        : jclass(GetJNI()->FindClass(clazz.c_str()), clazz)
     {
     }
 
@@ -1086,7 +1119,8 @@ struct jclass
 
 struct jobject
 {
-    jobject(java::object const& object) : object(object)
+    jobject(java::object const& object)
+        : object(object)
     {
     }
 
@@ -1119,6 +1153,7 @@ struct jobject
         out.l = object;
         return out;
     }
+
     operator java::object()
     {
         return object;
@@ -1206,13 +1241,13 @@ FORCEDINLINE jnipp::wrapping::jclass operator"" _jclass(
 }
 
 FORCEDINLINE jnipp::wrapping::jmethod<jnipp::return_type::void_>
-             operator"" _jmethod(const char* name, size_t)
+operator"" _jmethod(const char* name, size_t)
 {
     return {jnipp::java::method{name}};
 }
 
 FORCEDINLINE jnipp::wrapping::jfield<jnipp::return_type::void_>
-             operator"" _jfield(const char* name, size_t)
+operator"" _jfield(const char* name, size_t)
 {
     return {jnipp::java::field{name}};
 }

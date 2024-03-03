@@ -18,10 +18,14 @@ namespace java {
 
 struct method
 {
-    method(std::string const& name) : name(name), signature("()V")
+    method(std::string const& name)
+        : name(name)
+        , signature("()V")
     {
     }
-    method(::jmethodID method_id) : method_id(method_id)
+
+    method(::jmethodID method_id)
+        : method_id(method_id)
     {
     }
 
@@ -60,17 +64,20 @@ struct method
         return *method_id;
     }
 
-    std::string name;
-    std::string signature;
+    std::string           name;
+    std::string           signature;
     optional<::jmethodID> method_id;
 };
 
 struct field
 {
-    field(std::string const& name) : name(name)
+    field(std::string const& name)
+        : name(name)
     {
     }
-    field(::jfieldID field_id) : field_id(field_id)
+
+    field(::jfieldID field_id)
+        : field_id(field_id)
     {
     }
 
@@ -85,19 +92,23 @@ struct field
         return *field_id;
     }
 
-    std::string name;
-    std::string signature;
+    std::string          name;
+    std::string          signature;
     optional<::jfieldID> field_id;
 };
 
 struct clazz
 {
-    clazz(std::string const& name) : name(name)
+    clazz(std::string const& name)
+        : name(name)
     {
     }
-    clazz(::jclass ref) : class_ref(ref)
+
+    clazz(::jclass ref)
+        : class_ref(ref)
     {
     }
+
     clazz()
     {
     }
@@ -124,14 +135,22 @@ struct array
     {
         return GetJNI()->GetArrayLength(instance);
     }
+
+    template<typename T>
+    static array of(T* arrayType)
+    {
+        return array{reinterpret_cast<::jarray>(arrayType)};
+    }
 };
 
 struct object
 {
-    object(java::clazz clazz, ::jobject instance) :
-        clazz(*clazz.class_ref), instance(instance)
+    object(java::clazz clazz, ::jobject instance)
+        : clazz(*clazz.class_ref)
+        , instance(instance)
     {
     }
+
     object()
     {
     }
@@ -227,7 +246,8 @@ struct type_wrapper
 template<typename T>
 struct type_unwrapper
 {
-    type_unwrapper(java::value value) : value(value)
+    type_unwrapper(java::value value)
+        : value(value)
     {
     }
 
