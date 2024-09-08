@@ -9,93 +9,45 @@
 
 namespace jnipp {
 
+template<typename T>
+struct is_jarray
+{
+    static constexpr bool value =
+        std::is_base_of<_jarray, typename std::remove_pointer<T>::type>::value;
+};
+
+enum class return_type
+{
+    byte_,
+    char_,
+    short_,
+    int_,
+    long_,
+    bool_,
+    float_,
+    double_,
+
+    byte_array_,
+    char_array_,
+    short_array_,
+    int_array_,
+    long_array_,
+    bool_array_,
+    float_array_,
+    double_array_,
+    object_array_,
+
+    array_,
+    object_,
+    void_,
+};
+
 extern JNIEnv* GetJNI();
 
 template<typename T>
 using optional = std::optional<T>;
 
 namespace java {
-
-struct method
-{
-    method(std::string const& name)
-        : name(name)
-        , signature("()V")
-    {
-    }
-
-    method(::jmethodID method_id)
-        : method_id(method_id)
-    {
-    }
-
-    inline std::string returnType()
-    {
-        auto returnSplit = signature.find(")") + 1;
-        return signature.substr(returnSplit, std::string::npos);
-    }
-
-    inline std::string argList()
-    {
-        auto returnSplit = signature.find("(");
-        auto endSplit    = signature.find(")");
-        return signature.substr(returnSplit + 1, endSplit - returnSplit - 1);
-    }
-
-    void ret(std::string const& retType)
-    {
-        auto returnSplit = signature.find(")");
-
-        signature = signature.substr(0, returnSplit + 1) + retType;
-    }
-
-    void arg(std::string const& argType)
-    {
-        auto endSplit = signature.find(")");
-
-        auto begin = signature.substr(0, endSplit);
-        auto end   = signature.substr(endSplit);
-
-        signature = begin + argType + end;
-    }
-
-    ::jmethodID operator*() const
-    {
-        return *method_id;
-    }
-
-    std::string           name;
-    std::string           signature;
-    optional<::jmethodID> method_id;
-};
-
-struct field
-{
-    field(std::string const& name)
-        : name(name)
-    {
-    }
-
-    field(::jfieldID field_id)
-        : field_id(field_id)
-    {
-    }
-
-    field& withType(std::string const& sig)
-    {
-        signature = sig;
-        return *this;
-    }
-
-    ::jfieldID operator*() const
-    {
-        return *field_id;
-    }
-
-    std::string          name;
-    std::string          signature;
-    optional<::jfieldID> field_id;
-};
 
 struct clazz
 {
@@ -125,6 +77,91 @@ struct clazz
 
     optional<std::string> name;
     optional<::jclass>    class_ref;
+};
+
+struct method
+{
+    method(std::string const& name)
+        : name(name)
+        , signature("()V")
+    {
+    }
+
+    method(
+        ::jmethodID           method_id,
+        optional<std::string> return_class = std::nullopt)
+        : method_id(method_id)
+        , return_class(return_class)
+    {
+    }
+
+    inline std::string returnType()
+    {
+        auto returnSplit = signature.find(")") + 1;
+        return signature.substr(returnSplit, std::string::npos);
+    }
+
+    inline std::string argList()
+    {
+        auto returnSplit = signature.find("(");
+        auto endSplit    = signature.find(")");
+        return signature.substr(returnSplit + 1, endSplit - returnSplit - 1);
+    }
+
+    void ret(std::string const& retType)
+    {
+        auto returnSplit = signature.find(")");
+        signature = signature.substr(0, returnSplit + 1) + retType;
+    }
+
+    void arg(std::string const& argType)
+    {
+        auto endSplit = signature.find(")");
+
+        auto begin = signature.substr(0, endSplit);
+        auto end   = signature.substr(endSplit);
+
+        signature = begin + argType + end;
+    }
+
+    ::jmethodID operator*() const
+    {
+        return *method_id;
+    }
+
+    std::string                name;
+    std::string                signature;
+    std::optional<std::string> return_class;
+    optional<::jmethodID>      method_id;
+};
+
+struct field
+{
+    field(std::string const& name)
+        : name(name)
+    {
+    }
+
+    field(::jfieldID field_id, optional<std::string> field_class = std::nullopt)
+        : field_id(field_id)
+        , signature(field_class.value_or(std::string()))
+    {
+    }
+
+    field& withType(std::string const& sig)
+    {
+        signature = sig;
+        return *this;
+    }
+
+    ::jfieldID operator*() const
+    {
+        return *field_id;
+    }
+
+    std::string          name;
+    std::string          signature;
+    optional<::jfieldID> field_id;
 };
 
 struct array
@@ -228,35 +265,6 @@ struct static_field_reference
 {
     java::clazz clazz;
     java::field field;
-};
-
-template<typename T>
-struct type_wrapper
-{
-    type_wrapper(T)
-    {
-    }
-
-    operator java::value()
-    {
-        return java::value();
-    }
-};
-
-template<typename T>
-struct type_unwrapper
-{
-    type_unwrapper(java::value value)
-        : value(value)
-    {
-    }
-
-    operator T() const
-    {
-        return T();
-    }
-
-    java::value value;
 };
 
 } // namespace java

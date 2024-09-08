@@ -1,12 +1,11 @@
 # Inline-JNI
-JNI to C++ wrapper which aims to make JNI a little bit more usable
 
-A header-only wrapper for JNI functionality, making it less painful to execute Java code from C++.
+A library for making JNI code a little more readable, at the expense of adding some complicated machinery behind the scenery :)
 
-**This library heavily uses C++11 user-defined literals, the minimum GCC version to use this is 4.8**
+TODO: This library is probably leaking memory, so beware of orphaned global references!
 
 # What is this used for?
-Primarily, I have used it for better Android integration from C++. Getting system information or calling Android APIs that are not exposed through the NDK becomes much easier, and the code is much more minimal.
+Primarily, I have used it for better Android integration from C++. Getting system information or calling Android APIs that are not exposed through the NDK becomes much easier, and the code is much more minimal. Things like callbacks and etc. are however still out of the question, however calling nested objects is quite feasible with this method.
 
 As an example, this is the code to fetch the name of the hardware board on Android:
 
@@ -28,20 +27,18 @@ For calling a method, you can do as such:
                                 .arg("java.lang.String")
                                 .arg("java.lang.String");
 
+    // With strings, there's a wrapper class that can convert the arguments to Java objects
     auto basename = jnipp::java::type_wrapper<std::string>(someString);
     auto extension = jnipp::java::type_wrapper<std::string>(someString);
 
     // Static method call
-    // Arguments are passed as jvalue, compile-time checked
-    auto fileValue = File[createTempFile](basename, extension);
+    auto file = File[createTempFile](basename, extension);
 
     // Instanced call
-    // First, instantiate class from value
-    auto fileInstance = File(value.l);
     // Specify method and its signature (runtime-checked)
     auto getCanonicalPath = "getCanonicalPath"_jmethod.ret("java.lang.String");
-    
-    auto path = fileInstance[getCanonicalPath]();
+
+    auto path = file[getCanonicalPath]();
 
     ...
     Use the value from path
