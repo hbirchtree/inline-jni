@@ -15,10 +15,13 @@ struct jclass
         : clazz(clazz)
         , class_name(class_name)
     {
+        this->clazz.name = type_signature::slashify(class_name);
     }
 
     jclass(std::string const& clazz)
-        : jclass(GetJNI()->FindClass(clazz.c_str()), clazz)
+        : jclass(
+              GetJNI()->FindClass(type_signature::slashify(clazz).c_str()),
+              clazz)
     {
     }
 
@@ -109,7 +112,7 @@ struct jobject
         // GetJNI()->DeleteGlobalRef(object.instance);
     }
 
-    jobject cast(jclass const& clazz) const;
+    inline jobject cast(jclass const& clazz) const;
 
     template<return_type RType, typename... Args>
     invocation::instance_call<RType, Args...> operator[](
@@ -140,14 +143,19 @@ struct jobject
         }};
     }
 
-    operator ::jvalue()
+    inline operator bool() const
     {
-        jvalue out;
-        out.l = object;
-        return out;
+        return static_cast<bool>(object);
     }
 
-    operator java::object()
+    inline operator ::jvalue() const
+    {
+        return ::jvalue{
+            .l = object,
+        };
+    }
+
+    inline operator java::object() const
     {
         return object;
     }
@@ -172,9 +180,6 @@ inline jobject jclass::construct(
 
 inline jobject jclass::operator()(java::object instance)
 {
-    if(!instance)
-        throw java_exception("null object");
-
     return jobject(java::object{clazz, instance.instance});
 }
 
@@ -185,9 +190,6 @@ inline jobject jclass::operator()(::jobject instance)
 
 inline jobject jclass::operator()(java::value instance)
 {
-    if(!instance)
-        throw java_exception("null object");
-
     return (*this)(java::object({}, instance->l));
 }
 

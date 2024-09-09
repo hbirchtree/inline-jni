@@ -1,5 +1,6 @@
 #pragma once
 
+#include "class_wrapper.h"
 #include "jni_types.h"
 
 namespace jnipp::java::array_extractors {
@@ -61,10 +62,11 @@ struct extract_type
                 std::to_string(index) + " >= " + std::to_string(length()));
 
         if constexpr(T == return_type::object_)
-            return java::object{
-                {},
+            return wrapping::jobject(java::object{
+                ref.value_class,
                 GetJNI()->GetObjectArrayElement(
-                    reinterpret_cast<jobjectArray>(ref.instance), index)};
+                    reinterpret_cast<jobjectArray>(ref.instance), index),
+            });
         else if constexpr(T != return_type::object_)
             return detail::get_element<T>(ref.instance, index);
         else
@@ -143,4 +145,4 @@ struct container
     jsize m_end;
 };
 
-} // namespace array_extractors
+} // namespace jnipp::java::array_extractors

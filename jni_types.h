@@ -111,7 +111,7 @@ struct method
     void ret(std::string const& retType)
     {
         auto returnSplit = signature.find(")");
-        signature = signature.substr(0, returnSplit + 1) + retType;
+        signature        = signature.substr(0, returnSplit + 1) + retType;
     }
 
     void arg(std::string const& argType)
@@ -166,7 +166,14 @@ struct field
 
 struct array
 {
-    ::jarray instance;
+    ::jarray    instance;
+    ::jclass    value_class;
+    std::string value_type;
+
+    operator ::jarray() const
+    {
+        return instance;
+    }
 
     jlong length() const
     {

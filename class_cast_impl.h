@@ -5,7 +5,7 @@
 
 namespace jnipp::wrapping {
 
-jobject jobject::cast(jclass const& clazz) const
+inline jobject jobject::cast(jclass const& clazz) const
 {
     auto cpy         = *this;
     cpy.object.clazz = get_class(clazz.clazz).clazz;

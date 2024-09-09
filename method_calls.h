@@ -117,7 +117,8 @@ inline auto call_no_except(
                          clazz, *method, values.data())
                    : GetJNI()->CallDoubleMethodA(
                          object, *method, values.data());
-    } else if constexpr(Type == return_type::object_)
+    } else if constexpr(
+        Type == return_type::object_ || Type == return_type::object_array_)
     {
         return java::object{
             java::clazz(nullptr),
@@ -274,7 +275,7 @@ struct jmethod
      * \param type Java class name of returned type
      * \return
      */
-    jmethod<return_type::object_, Args...> ret(std::string const& type)
+    jmethod<return_type::object_array_, Args...> ret(std::string const& type)
     {
         method.ret(type_signature::to_str<T2>(type));
         method.return_class = type;
