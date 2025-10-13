@@ -24,4 +24,4 @@ struct exception_clear_scope
     }
 };
 
-}
+} // namespace jnipp

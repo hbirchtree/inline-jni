@@ -13,4 +13,4 @@ inline wrapping::jclass get_class(java::clazz const& clazz)
     return {GetJNI()->FindClass(class_name.c_str()), class_name};
 }
 
-}
+} // namespace jnipp

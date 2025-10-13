@@ -20,20 +20,20 @@
 
 namespace jnipp::literals {
 
-FORCEDINLINE jnipp::wrapping::jclass operator"" _jclass(
+FORCEDINLINE jnipp::wrapping::jclass operator""_jclass(
     const char* name, size_t)
 {
     return jnipp::get_class({name});
 }
 
 FORCEDINLINE jnipp::wrapping::jmethod<jnipp::return_type::void_>
-operator"" _jmethod(const char* name, size_t)
+operator""_jmethod(const char* name, size_t)
 {
     return {jnipp::java::method{name}};
 }
 
 FORCEDINLINE jnipp::wrapping::jfield<jnipp::return_type::void_>
-operator"" _jfield(const char* name, size_t)
+operator""_jfield(const char* name, size_t)
 {
     return {jnipp::java::field{name}};
 }

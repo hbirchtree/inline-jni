@@ -232,4 +232,4 @@ inline std::string to_str()
     return "V";
 }
 
-}
+} // namespace jnipp::type_signature

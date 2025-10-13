@@ -57,6 +57,7 @@ struct array_type_unwrapper
         : arrayRef(*obj.array())
     {
     }
+
     array_type_unwrapper(java::array arr)
         : arrayRef(arr)
     {
