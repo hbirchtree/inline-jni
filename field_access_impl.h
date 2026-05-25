@@ -26,10 +26,11 @@ inline auto instance_field<T>::operator*() const
     else if constexpr(T == return_type::double_)
         return GetJNI()->GetDoubleField(field.instance, *field.field);
     else if constexpr(T == return_type::object_)
-        return wrapping::jobject(java::object{
-            {},
-            GetJNI()->GetObjectField(field.instance, *field.field),
-        });
+        return wrapping::jobject(
+            java::object{
+                {},
+                GetJNI()->GetObjectField(field.instance, *field.field),
+            });
     else
         return java::value();
 }
@@ -54,10 +55,11 @@ inline auto static_field<T>::operator*() const
     else if constexpr(T == return_type::double_)
         return GetJNI()->GetStaticDoubleField(field.clazz, *field.field);
     else if constexpr(T == return_type::object_)
-        return wrapping::jobject(java::object{
-            {},
-            GetJNI()->GetStaticObjectField(field.clazz, *field.field),
-        });
+        return wrapping::jobject(
+            java::object{
+                {},
+                GetJNI()->GetStaticObjectField(field.clazz, *field.field),
+            });
     else
         return java::value();
 }

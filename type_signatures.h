@@ -1,7 +1,7 @@
 #pragma once
 
-#include <algorithm>
 #include "jni_types.h"
+#include <algorithm>
 
 namespace jnipp::type_signature {
 

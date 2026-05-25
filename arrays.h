@@ -62,11 +62,12 @@ struct extract_type
                 std::to_string(index) + " >= " + std::to_string(length()));
 
         if constexpr(T == return_type::object_)
-            return wrapping::jobject(java::object{
-                ref.value_class,
-                GetJNI()->GetObjectArrayElement(
-                    reinterpret_cast<jobjectArray>(ref.instance), index),
-            });
+            return wrapping::jobject(
+                java::object{
+                    ref.value_class,
+                    GetJNI()->GetObjectArrayElement(
+                        reinterpret_cast<jobjectArray>(ref.instance), index),
+                });
         else if constexpr(T != return_type::object_)
             return detail::get_element<T>(ref.instance, index);
         else
